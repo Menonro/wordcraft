@@ -855,9 +855,6 @@ impl Ctx<'_> {
         pl
     }
 
-    /// The list label of `p`, advancing the list counters: call it once per paragraph, in
-    /// document order (only for paragraphs that will show).
-    /// Whether `p` gets a list label ([`Ctx::next_label`] is `Some`), without counting it.
     /// Whether `p`'s paragraph mark is hidden, with hidden text not shown: Word then shows the
     /// paragraph on one line with the next one (#3986). A section's closing mark never joins.
     fn mark_hidden(&self, p: &Paragraph, table_chr: Option<&CharProps>) -> bool {
@@ -871,6 +868,9 @@ impl Ctx<'_> {
                 && p.runs.iter().all(|r| r.len == 0 || self.doc.styles.resolve_char_in(p.props.style.as_deref(), table_chr, &r.props).hidden))
     }
 
+    /// The list label of `p`, advancing the list counters: call it once per paragraph, in
+    /// document order (only for paragraphs that will show).
+    /// Whether `p` gets a list label ([`Ctx::next_label`] is `Some`), without counting it.
     fn has_label(&self, p: &Paragraph) -> bool {
         p.props
             .numbering

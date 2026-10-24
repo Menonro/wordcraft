@@ -2181,6 +2181,16 @@ impl PageBuilder<'_> {
             self.block_marks.push(pg.items.len().saturating_sub(behind));
         }
     }
+    /// Takes back the mark of a block that has placed nothing yet: it goes on from the line of
+    /// the block before (#3986), and justified vertical alignment keeps the two together.
+    fn unmark_block(&mut self) {
+        if let Some(pg) = self.pages.last() {
+            let behind = self.behind.last().copied().unwrap_or(0);
+            if self.block_marks.last() == Some(&pg.items.len().saturating_sub(behind)) {
+                self.block_marks.pop();
+            }
+        }
+    }
     /// Justified vertical alignment: share the room left below the page's text out equally
     /// between the gaps of its blocks, so the last line sits on the bottom margin (above the
     /// footnotes). A page with one block, or several columns, stays at the top.
@@ -3789,6 +3799,7 @@ fn place_para_joined(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: 
     }
     pb.y = j.top;
     pb.prev = None;
+    pb.unmark_block();
     pb.excl.push(area.clone());
     place_para_alone(ctx, pb, &q, block, body_top);
     ctx.joined = outer;
@@ -4237,6 +4248,11 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
         {
             for li in l0..l1 {
                 let Some(line) = pl.lines.get(li).filter(|l| !l.beside) else { continue };
+                // The first line of a paragraph going on from the line of the one before (#3986)
+                // shares that line, numbered already, unless its first word went on the next one.
+                if li == 0 && ctx.joined == Some(p.rev) && line.top <= 0.01 {
+                    continue;
+                }
                 pb.line_no = pb.line_no.saturating_add(1);
                 let n = pb.line_no.saturating_add(ln.start.saturating_sub(1));
                 if ln.count_by > 1 && !n.is_multiple_of(ln.count_by) {

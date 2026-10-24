@@ -1684,9 +1684,6 @@ impl Edges {
     }
 }
 
-/// Paragraph lines plus their shading and borders; returns the bottom of the lines. The
-/// shading fills the box out to the borders, the room they take included (Word).
-#[allow(clippy::too_many_arguments)]
 /// Where a paragraph whose mark is hidden ends (#3986). Word shows it on one line with the next
 /// paragraph: that one's text goes on from where this one's ends, beside it on its last line.
 /// Paragraphs that show nothing (an empty one with a hidden mark, say) pass the place on.
@@ -1734,6 +1731,9 @@ impl Joint {
     }
 }
 
+/// Paragraph lines plus their shading and borders; returns the bottom of the lines. The
+/// shading fills the box out to the borders, the room they take included (Word).
+#[allow(clippy::too_many_arguments)]
 fn push_para(
     items: &mut Vec<Placed>,
     story: StoryRef,
@@ -3801,6 +3801,15 @@ fn place_para_joined(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: 
     }
 }
 
+/// A paragraph going on from the line of the one before (#3986) whose first line moves on to the
+/// next column or page no longer shares that line: it is laid out as it is on its own there, its
+/// list number drawn and its first-line indent and alignment its own.
+fn unjoin(ctx: &mut Ctx, p: &Paragraph) {
+    if ctx.joined == Some(p.rev) {
+        ctx.joined = None;
+    }
+}
+
 /// A closing mark before a continuous section takes no room after content. An otherwise empty
 /// section starting a new page retains its paragraph line.
 fn place_para_alone(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block: usize, body_top: f32) {
@@ -3983,6 +3992,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
         // With the 0.01 pt of slack the other fit checks take.
         if pb.y + need > pb.bottom + 0.01 && !pb.at_top() && need <= pb.uncapped_bottom() - pb.top {
             pb.advance(block, body_top);
+            unjoin(ctx, p);
             pb.y += pl.rp.space_before.min(0.0);
             applied_before = pl.rp.space_before.min(0.0);
         }
@@ -4164,6 +4174,7 @@ fn place_para_in_flow(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, block:
             } else {
                 pb.advance(block, body_top);
                 if l0 == 0 {
+                    unjoin(ctx, p);
                     let y0 = pb.y;
                     (float_rects, pl, rel) = again(ctx, eq_start, |ctx| anchor_floats(ctx, pb, p, block, y0, 0.0, excl_mark, &label, true));
                     (laid_page, laid_width) = (pb.number, pb.col_w());

@@ -2108,6 +2108,11 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
     let mut row_first = 0usize;
     // Spans skipped in a row because the next word didn't fit (see `skip`).
     let mut skipped = 0;
+    // The first line of a paragraph going on from the one before (#3986) starts right after that
+    // one's text on the shared line; pushed below it (its first word didn't fit there), it starts
+    // at the paragraph's left indent, as its other lines do.
+    let (joined, own_left) = (env.joined, rp.indent_left);
+    let first_lo = move |top: f32| if joined && top > 0.0 { own_left } else { first_left };
     // A left tab past the right indent that wrapped to start the next line.
     let mut wrapped_tab: Option<usize> = None;
     loop {
@@ -2115,14 +2120,14 @@ fn break_lines(pl: &mut ParaLayout, env: &ParaEnv, mark_style: u32, level: Optio
         let beside = !row_rest.is_empty() && lines.len() > row_first;
         // The span is narrowed by a floating object.
         let mut narrowed = !row_rest.is_empty();
-        let row_lo = if first { first_left } else { rp.indent_left };
+        let row_lo = if first { first_lo(top) } else { rp.indent_left };
         let (left, right_edge) = if let Some(span) = row_rest.pop_front() {
             span
         } else {
             // Flow around floating objects: the spans beside them, or below them.
             let mut guard = 0;
             loop {
-                let mut lo = if first { first_left } else { rp.indent_left };
+                let mut lo = if first { first_lo(top) } else { rp.indent_left };
                 if let Some((_, dl, dw)) = pl.drop_cap
                     && dw > 0.0
                     && lines.len() < dl as usize

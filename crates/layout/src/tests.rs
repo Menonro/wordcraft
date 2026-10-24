@@ -1646,6 +1646,87 @@ fn text_going_on_from_a_larger_heading_sits_on_its_baseline() {
 }
 
 #[test]
+fn a_joined_paragraph_moved_to_the_next_page_has_its_own_number() {
+    // A paragraph going on from one with a hidden mark (#3986) that moves whole to the next page
+    // (its lines kept together) no longer shares that line: there its number is drawn and its
+    // text starts at its own indent.
+    let omega = "Omega ".repeat(60);
+    let build = |filler: usize| {
+        let mut text: Vec<String> = (0..filler).map(|i| format!("Filler {i}")).collect();
+        text.push("Alpha".into());
+        text.push(omega.clone());
+        let mut d = Document::from_text(&text.join("\n"));
+        let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        d.format_paragraphs(&Pos::body(filler, 0), &Pos::body(filler + 1, omega.len()), &|p| {
+            p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 });
+        })
+        .unwrap();
+        d.para_mut(StoryRef::Body, &Path::top(filler)).unwrap().mark.hidden = Some(true);
+        d.para_mut(StoryRef::Body, &Path::top(filler + 1)).unwrap().props.keep_lines = Some(true);
+        d
+    };
+    // The page of a paragraph's first line, with its number there.
+    let first = |l: &DocLayout, block: usize| {
+        l.pages.iter().enumerate().find_map(|(pi, page)| {
+            page.items.iter().find_map(|it| match it {
+                Placed::Lines { path, para, l0: 0, .. } if *path == Path::top(block) => {
+                    Some((pi, para.label.as_ref().map(|label| label.text.clone())))
+                }
+                _ => None,
+            })
+        })
+    };
+    for filler in 20..80 {
+        let d = build(filler);
+        let l = lay(&d);
+        let (Some((0, alpha)), Some((1, omega_label))) = (first(&l, filler), first(&l, filler + 1)) else { continue };
+        assert_eq!(alpha.as_deref(), Some("1."));
+        assert_eq!(omega_label.as_deref(), Some("2."), "the moved paragraph draws its number");
+        let (a, o) = (l.caret(&Pos::body(filler, 0)).unwrap(), l.caret(&Pos::body(filler + 1, 0)).unwrap());
+        assert_eq!(o.page, 1);
+        assert!((o.x - a.x).abs() < 0.5, "the moved paragraph's text starts at its own indent: {} vs {}", o.x, a.x);
+        return;
+    }
+    panic!("no filler put Alpha last on the first page with the joined paragraph moved on");
+}
+
+#[test]
+fn a_joined_first_word_that_does_not_fit_goes_on_the_next_line_at_the_indent() {
+    // Word (#3986): when the next paragraph's first word doesn't fit after the first one's text,
+    // it goes on the next line, still joined (no number drawn), at the indent of the list's text.
+    let build = |n: usize| {
+        let alpha = vec!["aa"; n].join(" ");
+        let omega = "Omegaomegaomega tail";
+        let mut d = Document::from_text(&format!("{alpha}\n{omega}"));
+        let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(1, omega.len()), &|p| {
+            p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 });
+        })
+        .unwrap();
+        d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().mark.hidden = Some(true);
+        (d, alpha.len())
+    };
+    for n in 20..200 {
+        let (d, alpha_len) = build(n);
+        let l = lay(&d);
+        let (end, start) = (l.caret(&Pos::body(0, alpha_len)).unwrap(), l.caret(&Pos::body(1, 0)).unwrap());
+        if (start.top - end.top).abs() < 0.5 {
+            continue; // still on the shared line
+        }
+        let indent = l.caret(&Pos::body(0, 0)).unwrap().x;
+        assert!(start.top > end.top, "the first word goes below the shared line");
+        assert!((start.x - indent).abs() < 0.5, "at the list text's indent {indent}, not {}", start.x);
+        let label = l.pages.iter().flat_map(|p| &p.items).find_map(|it| match it {
+            Placed::Lines { path, para, .. } if *path == Path::top(1) => Some(para.label.as_ref().map(|label| label.text.clone())),
+            _ => None,
+        });
+        assert_eq!(label, Some(None), "still joined: no number drawn");
+        return;
+    }
+    panic!("no length of the first paragraph left its last line too full for the next one's first word");
+}
+
+#[test]
 fn a_numbered_heading_opening_with_a_page_break_takes_its_number_along() {
     // "Before", then a numbered paragraph whose text opens with a page break: Word draws its
     // number on the next page with the text, not alone at the bottom of the first.

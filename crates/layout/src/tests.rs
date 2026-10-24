@@ -1528,6 +1528,124 @@ fn empty_list_paragraph_with_a_hidden_mark_counts_but_shows_nothing() {
 }
 
 #[test]
+fn a_paragraph_with_a_hidden_mark_goes_on_into_the_next_one() {
+    // Word (#3986): a paragraph whose mark is hidden is shown on one line with the next one. The
+    // next one's text goes on from where the first one's ends; its number is counted but not
+    // drawn ("1. AlphaOmega", then "3. Beta") and it takes no line of its own. A paragraph that
+    // shows nothing in between passes the joint on. In a table cell as in the body.
+    let doc = |paras: &[(&str, bool)], in_cell: bool| {
+        let text: Vec<&str> = paras.iter().map(|(t, _)| *t).collect();
+        let mut d = Document::from_text(&text.join("\n"));
+        let id = d.numbering.add_list(wordcraft_doc::ListKind::Numbered);
+        let last = d.body.len() - 1;
+        let end = paras.last().map_or(0, |(t, _)| t.len());
+        d.format_paragraphs(&Pos::body(0, 0), &Pos::body(last, end), &|p| {
+            p.numbering = Some(wordcraft_doc::props::NumRef { num: id, level: 0 });
+        })
+        .unwrap();
+        for (i, (_, hidden)) in paras.iter().enumerate() {
+            if *hidden {
+                d.para_mut(StoryRef::Body, &Path::top(i)).unwrap().mark.hidden = Some(true);
+            }
+        }
+        if in_cell {
+            let mut table = Table::new(1, 1, 400.0);
+            table.rows[0].cells[0].blocks = std::mem::take(&mut d.body);
+            d.body = vec![std::sync::Arc::new(Block::Table(table))];
+        }
+        d
+    };
+    // Each paragraph's number, the top of its first line, and the x its text starts and ends at.
+    let laid = |d: &Document, show_hidden: bool| {
+        let l = layout(d, &mut LayoutCache::new(), &LayoutOptions { show_hidden, ..Default::default() });
+        let lines: Vec<(Option<String>, f32, f32, f32)> = l
+            .pages
+            .iter()
+            .flat_map(|p| &p.items)
+            .filter_map(|it| match it {
+                Placed::Lines { para, l0, l1, x, y, .. } => {
+                    let last = l1.checked_sub(1)?;
+                    Some((para.label.as_ref().map(|label| label.text.clone()), *y, x + para.x_of(*l0, 0)?, x + para.x_of(last, para.text_len)?))
+                }
+                _ => None,
+            })
+            .collect();
+        lines
+    };
+    for in_cell in [false, true] {
+        let plain = laid(&doc(&[("Alpha", false), ("Beta", false)], in_cell), false);
+        let beta_y = plain[1].1;
+
+        // Text: "Omega" on Alpha's line, after Alpha's text.
+        let joined = laid(&doc(&[("Alpha", true), ("Omega", false), ("Beta", false)], in_cell), false);
+        let labels: Vec<_> = joined.iter().map(|l| l.0.as_deref()).collect();
+        assert_eq!(labels, vec![Some("1."), None, Some("3.")], "in_cell={in_cell}");
+        assert!((joined[1].1 - joined[0].1).abs() < 0.01, "in_cell={in_cell}: Omega at {} not on Alpha's line {}", joined[1].1, joined[0].1);
+        assert!((joined[1].2 - joined[0].3).abs() < 0.5, "in_cell={in_cell}: Omega starts at {}, Alpha ends at {}", joined[1].2, joined[0].3);
+        assert!((joined[2].1 - beta_y).abs() < 0.01, "in_cell={in_cell}: Beta at {} instead of {beta_y}", joined[2].1);
+
+        // An empty paragraph: no line of its own, no number.
+        let empty = laid(&doc(&[("Alpha", true), ("", false), ("Beta", false)], in_cell), false);
+        let labels: Vec<_> = empty.iter().map(|l| l.0.as_deref()).collect();
+        assert_eq!(labels, vec![Some("1."), None, Some("3.")], "in_cell={in_cell}");
+        assert!((empty[2].1 - beta_y).abs() < 0.01, "in_cell={in_cell}: Beta at {} instead of {beta_y}", empty[2].1);
+
+        // Through an empty paragraph with a hidden mark (which shows nothing).
+        let chain = laid(&doc(&[("Alpha", true), ("", true), ("Omega", false), ("Beta", false)], in_cell), false);
+        let labels: Vec<_> = chain.iter().map(|l| l.0.as_deref()).collect();
+        assert_eq!(labels, vec![Some("1."), None, None, Some("4.")], "in_cell={in_cell}");
+        assert!((chain[2].1 - chain[0].1).abs() < 0.01, "in_cell={in_cell}: Omega not on Alpha's line");
+
+        // Hidden text shown: each paragraph on its own line, with its number.
+        let shown = laid(&doc(&[("Alpha", true), ("Omega", false), ("Beta", false)], in_cell), true);
+        let labels: Vec<_> = shown.iter().map(|l| l.0.as_deref()).collect();
+        assert_eq!(labels, vec![Some("1."), Some("2."), Some("3.")], "in_cell={in_cell}");
+        assert!(shown[1].1 > shown[0].1 + 5.0, "in_cell={in_cell}: shown hidden text keeps the paragraphs apart");
+    }
+    // A click on the joined text lands in the paragraph it belongs to.
+    let d = doc(&[("Alpha", true), ("Omega", false), ("Beta", false)], false);
+    let l = lay(&d);
+    let omega = l.caret(&Pos::body(1, 2)).unwrap();
+    let hit = l.hit(omega.page, omega.x + 0.5, omega.top + omega.height / 2.0, StoryRef::Body).unwrap();
+    assert_eq!(hit.path, Path::top(1));
+}
+
+#[test]
+fn text_going_on_from_a_larger_heading_sits_on_its_baseline() {
+    // A heading with a hidden mark followed by body text (a style separator in Word, #3986): the
+    // body text's first line goes on beside the heading, on the heading's baseline; its next lines
+    // start at the margin, below both.
+    let body = "Body text that is long enough to wrap onto a second line in this column. ".repeat(3);
+    let mut d = Document::from_text(&format!("Heading\n{body}"));
+    d.format_range(&Pos::body(0, 0), &Pos::body(0, 7), &|c| c.size = Some(18.0)).unwrap();
+    d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().mark.hidden = Some(true);
+    let l = lay(&d);
+    let lines: Vec<(Path, f32, f32, f32)> = l.pages[0]
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            Placed::Lines { path, para, l0, l1, x, y, .. } => {
+                let first = para.lines.get(*l0)?;
+                let (x, y) = (*x, *y);
+                Some((*l0..*l1).filter_map(move |li| {
+                    let line = para.lines.get(li)?;
+                    Some((path.clone(), y + line.baseline - first.top, x + para.x_of(li, line.start)?, y + line.top - first.top))
+                }))
+            }
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let heading = lines.iter().find(|l| l.0 == Path::top(0)).unwrap();
+    let body: Vec<_> = lines.iter().filter(|l| l.0 == Path::top(1)).collect();
+    assert!(body.len() >= 2, "{lines:?}");
+    assert!((body[0].1 - heading.1).abs() < 0.01, "body baseline {} vs heading {}", body[0].1, heading.1);
+    assert!(body[0].2 > 100.0, "the body text starts after the heading's, at {}", body[0].2);
+    assert!((body[1].2 - 72.0).abs() < 0.5, "the next line starts at the margin, not at {}", body[1].2);
+    assert!(body[1].3 > heading.1, "the next line is below the shared one");
+}
+
+#[test]
 fn a_numbered_heading_opening_with_a_page_break_takes_its_number_along() {
     // "Before", then a numbered paragraph whose text opens with a page break: Word draws its
     // number on the next page with the text, not alone at the bottom of the first.

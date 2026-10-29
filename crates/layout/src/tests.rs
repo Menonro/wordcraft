@@ -1906,6 +1906,38 @@ fn text_going_on_from_a_larger_heading_sits_on_its_baseline() {
 }
 
 #[test]
+fn a_text_box_anchored_in_a_paragraph_with_a_hidden_mark_is_not_joined() {
+    // A text box anchored in the first paragraph lays its own story out, whose first line has
+    // the same path as that paragraph (#3986). The next paragraph goes on from the paragraph's
+    // text, not from the box's, which is drawn after it.
+    let mut d = Document::from_text("Alpha\nOmega");
+    d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().mark.hidden = Some(true);
+    let float = wordcraft_doc::para::Float {
+        wrap: wordcraft_doc::para::Wrap::InFrontOfText,
+        h_rel: wordcraft_doc::para::Anchor::Column,
+        v_rel: wordcraft_doc::para::Anchor::Paragraph,
+        x: 200.0,
+        y: 100.0,
+        dist: 0.0,
+        ..Default::default()
+    };
+    text_box(&mut d, 0, "Box", 100.0, 40.0, float);
+    let l = lay(&d);
+    // The top of a story's line at a block, and the x its text starts and ends at.
+    let line = |story: StoryRef, block: usize| {
+        l.pages[0].items.iter().find_map(|it| match it {
+            Placed::Lines { story: s, path, para, l0, l1, x, y, .. } if *s == story && *path == Path::top(block) => {
+                Some((*y, x + para.x_of(*l0, 0)?, x + para.x_of(l1.checked_sub(1)?, para.text_len)?))
+            }
+            _ => None,
+        })
+    };
+    let (alpha, omega) = (line(StoryRef::Body, 0).unwrap(), line(StoryRef::Body, 1).unwrap());
+    assert!((omega.0 - alpha.0).abs() < 0.01, "Omega at {} not on Alpha's line {}", omega.0, alpha.0);
+    assert!((omega.1 - alpha.2).abs() < 0.5, "Omega starts at {}, Alpha ends at {}", omega.1, alpha.2);
+}
+
+#[test]
 fn a_joined_paragraph_moved_to_the_next_page_has_its_own_number() {
     // A paragraph going on from one with a hidden mark (#3986) that moves whole to the next page
     // (its lines kept together) no longer shares that line: there its number is drawn and its

@@ -41,7 +41,7 @@ pub(crate) fn place_para(ctx: &mut Ctx, pb: &mut PageBuilder, p: &Paragraph, blo
         let path = Path::top(block);
         pb.joint = pb.page().and_then(|page| {
             page.items.iter().rev().find_map(|it| match it {
-                Placed::Lines { path: at, para, l0, l1, x, y, turn: TextDirection::Horizontal, .. } if *at == path => {
+                Placed::Lines { story: StoryRef::Body, path: at, para, l0, l1, x, y, turn: TextDirection::Horizontal, .. } if *at == path => {
                     Joint::after(para, (*l0, *l1), block, (*x, *y))
                 }
                 _ => None,

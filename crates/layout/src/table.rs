@@ -789,6 +789,9 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 VAlign::Center => ((span_h - align_h) / 2.0).max(0.0),
                 VAlign::Bottom => (span_h - align_h).max(0.0),
             };
+            // A middle or bottom cell as tall as its row moves nowhere, and still is lined up in
+            // the part of a split row left on a page (see `align_in_part`).
+            let aligned = c.valign != VAlign::Top && c.turned.is_none();
             let end = (c.vmerge != VMerge::Continue && c.turned.is_none()).then_some(c.end + dy);
             let mut cell_items = c.items;
             if let Some(tn) = c.turned {
@@ -830,7 +833,7 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 it.translate(0.0, dy);
                 items.push(it);
             }
-            let align = (dy > 0.0).then_some(CellAlign { content: content..items.len(), valign: c.valign, dy, height: align_h });
+            let align = (dy > 0.0 || aligned).then_some(CellAlign { content: content..items.len(), valign: c.valign, dy, height: align_h });
             let b = c.borders;
             let (x0, x1, y0, y1) = (c.x, c.x + c.w, 0.0, rh);
             // Horizontal edges run on over half of each visible vertical edge, so the corners
@@ -1188,6 +1191,12 @@ fn cells_from_top(row: &RowLayout, limit: f32) -> (CellItems<'_>, Vec<Option<f32
 
 /// Line up the middle and bottom cells marked in `realign` within the part of the row left on the
 /// page: as tall as the other cells' text kept there (by `splits`) and the bottom margin.
+///
+/// A middle or bottom cell whose text goes on to the next page is lined up in that part too, by
+/// the text it keeps here. Measured in Word for Windows with a row cut after 17 lines: a cell
+/// that keeps 15 of them (its paragraphs of three lines move on whole) starts one line down when
+/// it is centred and two lines down when it is bottom-aligned, beside cells that keep all 17;
+/// on the following pages every cell starts at the top.
 fn align_in_part(
     row: &RowLayout,
     cells: &mut [std::borrow::Cow<[Placed]>],
@@ -1196,12 +1205,16 @@ fn align_in_part(
     ends: &mut [Option<f32>],
     cut: f32,
 ) {
-    if realign.iter().all(Option::is_none) {
+    if row.cells.iter().all(|c| c.align.is_none()) {
         return;
     }
     let limit = cut - row.bottom.clamp(0.0, cut);
     let mut kept = f32::MIN;
-    for (((items, splits), _), end) in cells.iter().zip(splits).zip(realign).zip(ends.iter()).filter(|((_, al), _)| al.is_none()) {
+    // Where the text each of those cells keeps on the page ends.
+    let mut own = vec![f32::MIN; cells.len()];
+    for ((((items, splits), _), end), own) in
+        cells.iter().zip(splits).zip(realign).zip(ends.iter()).zip(&mut own).filter(|(((_, al), _), _)| al.is_none())
+    {
         // No further than the cell's content: its last paragraph may have dropped its space after.
         let end = end.unwrap_or(f32::MAX);
         for (it, &split) in items.iter().zip(splits) {
@@ -1218,15 +1231,27 @@ fn align_in_part(
             };
             if let Some(b) = bottom.filter(|&b| b <= limit + 0.01) {
                 kept = kept.max(b);
+                *own = own.max(b);
             }
         }
     }
     let part = if kept > f32::MIN { kept + row.bottom } else { cut };
-    for (((items, al), c), end) in cells.iter_mut().zip(realign).zip(&row.cells).zip(ends) {
-        let (Some(al), Some(e)) = (al, *end) else { continue };
-        let room = (part - al.height).max(0.0);
-        let dy = if al.valign == VAlign::Center { room / 2.0 } else { room };
-        let dy = dy.min((limit - e).max(0.0));
+    for ((((items, al), c), end), own) in cells.iter_mut().zip(realign).zip(&row.cells).zip(ends).zip(own) {
+        let Some(e) = *end else { continue };
+        let dy = match (al, c.align.as_ref()) {
+            (Some(al), _) => {
+                let room = (part - al.height).max(0.0);
+                let dy = if al.valign == VAlign::Center { room / 2.0 } else { room };
+                dy.min((limit - e).max(0.0))
+            }
+            // Its text goes on: what it keeps here, against the tallest text kept.
+            (None, Some(al)) if own > f32::MIN => {
+                let room = (kept - own).max(0.0);
+                if al.valign == VAlign::Center { room / 2.0 } else { room }
+            }
+            _ => continue,
+        };
+        let Some(al) = al.or(c.align.as_ref()) else { continue };
         shift_content(items, c, al, dy);
         *end = Some(e + dy);
     }

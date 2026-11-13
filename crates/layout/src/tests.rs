@@ -4625,10 +4625,11 @@ fn a_split_rows_middle_and_bottom_cells_are_lined_up_by_the_text_they_keep() {
         wordcraft_doc::para_block(p)
     };
     let br = wordcraft_doc::para::LINE_BREAK;
-    // A row of three cells pushed `push` down the page: forty one-line paragraphs, and twice
-    // twelve paragraphs of three lines, each cell aligned as `valigns` says.
-    let row = |push: f32, valigns: [Option<VAlign>; 3]| {
-        let mut d = Document::from_text("Filler");
+    // A row of three cells pushed `push` down the page: `singles` one-line paragraphs, and
+    // twice twelve paragraphs of three lines, each cell aligned as `valigns` says; a paragraph
+    // follows the table.
+    let row_of = |singles: usize, push: f32, valigns: [Option<VAlign>; 3]| {
+        let mut d = Document::from_text("Filler\nAfter");
         if let Some(wordcraft_doc::Block::Para(p)) = d.body.first_mut().map(std::sync::Arc::make_mut) {
             p.props.space_before = Some(push);
             p.props.space_after = Some(0.0);
@@ -4636,7 +4637,7 @@ fn a_split_rows_middle_and_bottom_cells_are_lined_up_by_the_text_they_keep() {
         let mut t = Table::new(1, 3, 450.0);
         t.props.cell_margins = Some([0.0, 5.4, 0.0, 5.4]);
         let cells = &mut t.rows[0].cells;
-        cells[0].blocks = (0..40).map(|i| para(&format!("One {i}"))).collect();
+        cells[0].blocks = (0..singles).map(|i| para(&format!("One {i}"))).collect();
         for cell in &mut cells[1..] {
             cell.blocks = (0..12).map(|i| para(&format!("A{i}{br}B{i}{br}C{i}"))).collect();
         }
@@ -4646,6 +4647,7 @@ fn a_split_rows_middle_and_bottom_cells_are_lined_up_by_the_text_they_keep() {
         d.insert_block(StoryRef::Body, &Path::top(1), wordcraft_doc::Block::Table(t)).unwrap();
         lay(&d)
     };
+    let row = |push: f32, valigns: [Option<VAlign>; 3]| row_of(40, push, valigns);
     // On page `page`, each cell's first line top and the lines it has there.
     let cells = |l: &DocLayout, page: usize| -> [(f32, usize); 3] {
         let mut out = [(f32::MAX, 0); 3];
@@ -4690,6 +4692,18 @@ fn a_split_rows_middle_and_bottom_cells_are_lined_up_by_the_text_they_keep() {
         let next = cells(&l, 1);
         assert_eq!(next.map(|c| c.1), [23, 21, 21], "{what}: lines on the second page");
         assert!(next.iter().all(|c| (c.0 - next[0].0).abs() < 0.05), "{what}: every cell goes on at the top: {next:?}");
+    }
+    // The rest of the row is as tall as without the lining up, also when the cells lined up are
+    // the ones with the most text left: the paragraph after the table stays where it is.
+    let after = |l: &DocLayout| {
+        l.pages[1].items.iter().find_map(|it| if let Placed::Lines { path, y, .. } = it { (path.0 == [2]).then_some(*y) } else { None })
+    };
+    let plain = after(&row_of(30, push, [None; 3])).expect("the paragraph after the table");
+    for valigns in [[None, Some(VAlign::Center), Some(VAlign::Bottom)], [Some(VAlign::Center); 3], [Some(VAlign::Bottom); 3]] {
+        let l = row_of(30, push, valigns);
+        assert_eq!(cells(&l, 1).map(|c| c.1), [13, 21, 21], "{valigns:?}: lines on the second page");
+        let y = after(&l).expect("the paragraph after the table");
+        assert!((y - plain).abs() < 0.05, "{valigns:?}: the paragraph after the table is at {y}, without the lining up at {plain}");
     }
 }
 

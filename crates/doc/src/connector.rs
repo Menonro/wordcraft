@@ -280,14 +280,14 @@ pub fn corner_radius(corner: Option<u32>, w: f32, h: f32) -> f32 {
     side * corner.map_or(DEFAULT_CORNER, |c| c.min(MAX_CORNER) as f32 / 100_000.0)
 }
 
-/// 1 − cos 45°: the share of a round corner's radius between the frame's edge and the point
+/// 1 - cos 45°: the share of a round corner's radius between the frame's edge and the point
 /// where the corner turns halfway.
 const CORNER_INSET: f32 = 0.292_893_2;
 
 /// How far inside a `w` × `h` shape's frame its text keeps on the left, top, right and bottom,
 /// before the text box's own margins: the text rectangle its DrawingML preset gives it
 /// (ECMA-376 §20.1.9, `a:rect` of the preset shape definitions). A rounded rectangle's is inset
-/// on every side by its corner radius × (1 − cos 45°), an ellipse's by the same share of its
+/// on every side by its corner radius × (1 - cos 45°), an ellipse's by the same share of its
 /// half axes, a diamond's by a quarter of its width and height. Measured in Word for Windows
 /// with text boxes in those shapes; the other kinds keep their whole frame here.
 pub fn text_insets(kind: ShapeKind, corner: Option<u32>, w: f32, h: f32) -> [f32; 4] {

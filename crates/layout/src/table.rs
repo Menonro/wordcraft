@@ -1076,7 +1076,7 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
             return None;
         }
     }
-    align_in_part(row, &mut cells, &splits, &realign, &mut ends, cut);
+    let lowered = align_in_part(row, &mut cells, &splits, &realign, &mut ends, cut);
     // The top of the first thing that moves on in each cell.
     let mut moved = vec![f32::MAX; cells.len()];
     // Whether each cell keeps anything on this page, and whether a line or picture of it that
@@ -1145,7 +1145,8 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
     let shifts: Vec<f32> = moved.iter().zip(&row.cells).map(|(&m, c)| ((if m < f32::MAX { m } else { first_moved }) - c.top).max(0.0)).collect();
     // The continuation is as tall as the cell needing the most room (what it moves on and the
     // bottom margin, the rest of the row for turned text), and at least the rest of the row.
-    let full = (row.height - shifts.iter().copied().fold(f32::MAX, f32::min)).max(4.0);
+    // A cell lined up lower in the part left here goes on with as much as if it had not moved.
+    let full = (row.height - shifts.iter().zip(&lowered).map(|(s, d)| s - d).fold(f32::MAX, f32::min)).max(4.0);
     let mut need = row.height - cut;
     for ((end, &m), &s) in ends.iter().zip(&moved).zip(&shifts) {
         if m < f32::MAX {
@@ -1317,7 +1318,8 @@ fn cells_from_top(row: &RowLayout, limit: f32) -> (CellItems<'_>, Vec<Option<f32
 /// the text it keeps here. Measured in Word for Windows with a row cut after 17 lines: a cell
 /// that keeps 15 of them (its paragraphs of three lines move on whole) starts one line down when
 /// it is centred and two lines down when it is bottom-aligned, beside cells that keep all 17;
-/// on the following pages every cell starts at the top.
+/// on the following pages every cell starts at the top. Returns how far each cell that goes on
+/// was moved down here.
 fn align_in_part(
     row: &RowLayout,
     cells: &mut [std::borrow::Cow<[Placed]>],
@@ -1325,9 +1327,10 @@ fn align_in_part(
     realign: &[Option<&CellAlign>],
     ends: &mut [Option<f32>],
     cut: f32,
-) {
+) -> Vec<f32> {
+    let mut lowered = vec![0.0; cells.len()];
     if row.cells.iter().all(|c| c.align.is_none()) {
-        return;
+        return lowered;
     }
     let limit = cut - row.bottom.clamp(0.0, cut);
     let mut kept = f32::MIN;
@@ -1363,7 +1366,7 @@ fn align_in_part(
         }
     }
     let part = if kept > f32::MIN { kept + row.bottom } else { cut };
-    for ((((items, al), c), end), own) in cells.iter_mut().zip(realign).zip(&row.cells).zip(ends).zip(own) {
+    for (((((items, al), c), end), own), lowered) in cells.iter_mut().zip(realign).zip(&row.cells).zip(ends).zip(own).zip(&mut lowered) {
         let Some(e) = *end else { continue };
         let dy = match (al, c.align.as_ref()) {
             (Some(al), _) => {
@@ -1374,7 +1377,8 @@ fn align_in_part(
             // Its text goes on: what it keeps here, against the tallest text kept.
             (None, Some(al)) if own > f32::MIN => {
                 let room = (kept - own).max(0.0);
-                if al.valign == VAlign::Center { room / 2.0 } else { room }
+                *lowered = if al.valign == VAlign::Center { room / 2.0 } else { room };
+                *lowered
             }
             _ => continue,
         };
@@ -1382,6 +1386,7 @@ fn align_in_part(
         shift_content(items, c, al, dy);
         *end = Some(e + dy);
     }
+    lowered
 }
 
 /// Move the content of cell `c` (its items `items`) down by `dy`.

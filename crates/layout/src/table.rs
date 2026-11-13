@@ -1700,13 +1700,17 @@ fn is_automatic(t: &Table) -> bool {
 }
 
 /// Cell widths given as percentages of the table's (`w:tcW w:type="pct"`), the same in every
-/// row, replace a stale grid: each column takes its share of the grid's total. Whether they did.
+/// row, replace a stale grid: each column takes its share of the grid's total, to a twentieth of
+/// a point as Word keeps widths. Whether the cells' widths are such percentages.
 ///
 /// Measured in Word for Windows with three equal grid columns under cells of 50, 25 and 25%: the
 /// columns are 240.8, 120.3 and 120.4 pt of a 481.5 pt table, in a fixed-layout table too, and
 /// 150, 75 and 75 pt of a 300 pt one; cells of 40, 20 and 20% give the same columns, so the
 /// shares are of their sum. Shares that add up to more than the table are left to the grid: Word
 /// then gives the first columns their percentages and the last one what is left.
+///
+/// A grid within a twentieth of a point of the shares is the one Word wrote from them, and stays
+/// as it is: a column 0.02 pt narrower moves a word of a full line to the next.
 fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     let Some(first) = t.rows.first() else { return false };
     let share = |c: &wordcraft_doc::Cell| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0 && c.props.width.is_none() && c.span() == 1);
@@ -1720,8 +1724,10 @@ fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     if !t.rows.iter().all(same) {
         return false;
     }
-    for (w, p) in grid.iter_mut().zip(&shares) {
-        *w = total * p / sum;
+    let twip = |w: f32| (w * 20.0).round() / 20.0;
+    let widths: Vec<f32> = shares.iter().map(|p| twip(total * p / sum)).collect();
+    if grid.iter().zip(&widths).any(|(g, w)| (g - w).abs() > 0.051) {
+        grid.copy_from_slice(&widths);
     }
     true
 }

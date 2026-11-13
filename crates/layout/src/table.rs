@@ -761,7 +761,8 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 // (measured in Word for Windows: with 0.5 pt inside borders and a 3 pt border
                 // round the table, the last row on a page ends 3 pt above the margin; with inside
                 // borders alone it ends at the margin).
-                let closing = cb.bottom.or(row_borders.bottom).or(tb.bottom);
+                let row_ex = row.props.exceptions.as_ref().and_then(|e| e.borders).unwrap_or_default();
+                let closing = cell.props.borders.unwrap_or_default().bottom.or(row_ex.bottom).or(tborders.bottom);
                 row_edge = row_edge.max(band(closing));
             }
             cells.push(CellBox {

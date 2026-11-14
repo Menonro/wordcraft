@@ -80,6 +80,9 @@ pub(crate) struct Ctx<'a> {
     /// Items re-placed as repeated table header rows so far, in the whole layout (see
     /// [`MAX_HEADER_ITEMS`]).
     pub(crate) header_repeats: usize,
+    /// How the rows of tables inside cells open at the top of a page ([`crate::table::RowTop`]),
+    /// for the split of the rows around them.
+    pub(crate) row_tops: crate::table::RowTops,
 }
 
 /// A paragraph going on from the line of the one before, whose mark is hidden (#3986): a copy of
@@ -640,6 +643,7 @@ mod tests {
             hf: Arc::new(HfLinks::new(doc.sections())),
             alphas: Default::default(),
             header_repeats: 0,
+            row_tops: Default::default(),
         };
 
         ctx.fitted_boxes(&p);

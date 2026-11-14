@@ -310,9 +310,10 @@ pub(crate) fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc
             let moves_on = first_part && short_of_min(ri, room);
             let split = match (splittable && !moves_on && !defer_kept, first_part) {
                 (false, _) => None,
-                (true, true) => split_keeping_nested(ctx.doc, cur, room),
+                (true, true) => table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, room), true, &ctx.row_tops),
                 // On a fresh page, a nested row taller than the room splits rather than overflowing.
-                (true, false) => table::split_row(cur, nested_keep_cut(ctx.doc, cur, room)).or_else(|| table::split_row(cur, room)),
+                (true, false) => table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, room), false, &ctx.row_tops)
+                    .or_else(|| table::split_row_opening(cur, room, false, &ctx.row_tops)),
             };
             match split {
                 Some((a, b)) => {

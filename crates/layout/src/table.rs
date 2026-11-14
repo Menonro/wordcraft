@@ -80,6 +80,20 @@ pub(crate) struct CellAlign {
     pub height: f32,
 }
 
+/// How a row of a table inside a cell opens at the top of a page, where the row around it splits
+/// just above it: like an outer row ([`PageTop`]), with the border it would have as its table's
+/// first row.
+#[derive(Clone, Default)]
+pub(crate) struct RowTop {
+    /// How much further down than in the table that border's band puts the row's content.
+    pub lift: f32,
+    /// That border, cell by cell.
+    pub borders: Vec<Option<Border>>,
+}
+
+/// [`RowTop`] by the table's story and path and the row's number.
+pub(crate) type RowTops = std::collections::HashMap<(StoryRef, Vec<u32>, usize), RowTop>;
+
 pub struct TableLayout {
     /// Table x offset within the column.
     pub x: f32,
@@ -830,6 +844,16 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             });
             g += span;
         }
+        // A table inside a cell: how each of its rows opens at the top of a page, for the split
+        // of the row around it (when its cells agree; an exact height keeps its band).
+        if depth > 1 && !(row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
+            let lift = cells.first().map_or(0.0, |c| c.lift);
+            if lift.is_finite() && cells.iter().all(|c| c.vmerge != VMerge::Continue && (c.lift - lift).abs() < 0.01) {
+                ctx.row_tops.insert((story, path.to_vec(), ri), RowTop { lift, borders: cells.iter().map(|c| c.opening).collect() });
+            } else {
+                ctx.row_tops.remove(&(story, path.to_vec(), ri));
+            }
+        }
         // Word adds the cells' top and bottom margins and border bands to an at-least row height:
         // a 30pt row with 5pt margins and 0.5pt borders is 40.5pt tall even when its text needs less.
         // An exact height gains only the bottom margin: it runs from the top border to the bottom
@@ -1067,8 +1091,16 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
 /// continuation is as tall as the cell needing the most room, and at least the rest of the row;
 /// an at-least row's continuation grows to the row's least height where it is placed (see
 /// [`grow_to_floor`]).
+#[cfg(test)]
 pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
-    split_row_with(row, cut, false)
+    split_row_with(row, cut, false, None)
+}
+
+/// [`split_row`] or [`split_row_keeping_cells`] (`whole_cells`) where the rows of the tables in
+/// the row's cells are known: one of them that moves on whole opens the continuation with the
+/// border in `tops`. This is the split the page flow places.
+pub(crate) fn split_row_opening(row: &RowLayout, cut: f32, whole_cells: bool, tops: &RowTops) -> Option<(RowLayout, RowLayout)> {
+    split_row_with(row, cut, whole_cells, Some(tops))
 }
 
 /// [`split_row`] for the first part of a row on a page that already holds something: `None`
@@ -1078,10 +1110,10 @@ pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
 /// other cells' text beside an empty cell, the row moves on whole (see `docs/layout-parity.md`,
 /// Tables). Content of a cell aligned below the cut doesn't count.
 pub fn split_row_keeping_cells(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
-    split_row_with(row, cut, true)
+    split_row_with(row, cut, true, None)
 }
 
-fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLayout, RowLayout)> {
+fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&RowTops>) -> Option<(RowLayout, RowLayout)> {
     // Also rejects a NaN cut.
     if !(cut > 0.0 && cut < row.height) {
         return None;
@@ -1198,6 +1230,8 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
     if whole_cells && kept_cells.iter().zip(&cut_through).any(|(&kept, &through)| !kept && through) {
         return None;
     }
+    let opened = nested_openers(&cells, &splits, &mut moved, own_depth, tops);
+    let first_moved = moved.iter().copied().fold(f32::MAX, f32::min);
     // Each cell resumes below its own top margin and border band.
     let shifts: Vec<f32> = moved.iter().zip(&row.cells).map(|(&m, c)| ((if m < f32::MAX { m } else { first_moved }) - c.top).max(0.0)).collect();
     // The continuation is as tall as the cell needing the most room (what it moves on and the
@@ -1217,7 +1251,7 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
     let geo_shift = |bottom: f32, shift: f32| if bottom >= row.height - 0.01 { rest } else { shift };
     let (mut a, mut b) = (Vec::new(), Vec::new());
     let mut parts = Vec::with_capacity(cells.len());
-    for ((((c, items), splits), &shift), end) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts).zip(&ends) {
+    for (((((c, items), splits), &shift), end), opened) in row.cells.iter().zip(&cells).zip(&splits).zip(&shifts).zip(&ends).zip(&opened) {
         let start = b.len();
         for (it, &split) in items.iter().zip(splits) {
             // A background picture: the part above the cut stays, and the continuation's area
@@ -1302,35 +1336,16 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                     a.extend(above.map(cell_at));
                     b.extend(below.map(cell_at));
                 }
-                Placed::Rule { x0, y0, x1, y1, border } => {
-                    if (y0 - y1).abs() < 0.01 {
-                        // Horizontal: the top edge stays, the bottom edge moves; both fragments close.
-                        // The continuation opens with its own border (below).
-                        if *y0 <= 0.01 {
-                            a.push(it.clone());
-                            if c.page_top.is_none() {
-                                b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
-                            }
-                        } else if *y0 >= row.height - 0.01 {
-                            a.push(Placed::Rule { x0: *x0, y0: cut, x1: *x1, y1: cut, border: *border });
-                            b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border });
-                        } else if *y0 <= cut {
-                            a.push(it.clone());
-                        } else {
-                            b.push(Placed::Rule { x0: *x0, y0: y0 - shift, x1: *x1, y1: y1 - shift, border: *border });
-                        }
-                    } else {
-                        let (t, bt) = (y0.min(*y1), y0.max(*y1));
-                        if t < cut {
-                            a.push(Placed::Rule { x0: *x0, y0: t, x1: *x1, y1: bt.min(cut), border: *border });
-                        }
-                        if bt > cut {
-                            let shift = geo_shift(bt, shift);
-                            b.push(Placed::Rule { x0: *x0, y0: (t - shift).max(0.0), x1: *x1, y1: bt - shift, border: *border });
-                        }
-                    }
+                Placed::Rule { .. } => {
+                    let at =
+                        RuleCut { cut, height: row.height, rest, shift, reopen: c.page_top.is_none(), edge: opened.as_ref().and_then(|o| o.edge) };
+                    split_rule(it, &at, &mut a, &mut b);
                 }
             }
+        }
+        // The border a nested row opens the part that goes on with, under the cell's own.
+        for &(x0, x1, border) in opened.iter().flat_map(|o| &o.rules) {
+            b.push(Placed::Rule { x0, y0: c.top, x1, y1: c.top, border });
         }
         // The border the part that goes on opens with at the top of its page.
         let page_top = c.page_top.as_ref().map(|t| PageTop { border: t.border, x: t.x, lift: 0.0, content: 0..0 });
@@ -1382,6 +1397,133 @@ pub fn grow_to_floor(row: &mut RowLayout, room: f32) {
         }
     }
     row.height = height;
+}
+
+/// Where a border of a row being split goes (see [`split_rule`]).
+struct RuleCut {
+    cut: f32,
+    /// The row's height.
+    height: f32,
+    /// How far up the continuation is for what runs to the row's bottom, and for the rest.
+    rest: f32,
+    shift: f32,
+    /// The continuation repeats the row's top border (it opens with one of its own otherwise).
+    reopen: bool,
+    /// The top edge of a nested row that opens the continuation with the borders drawn on it.
+    edge: Option<f32>,
+}
+
+/// The parts of border `it` of a row split at `at.cut`: for the part left on the page (`a`) and
+/// for the continuation (`b`). Horizontal: the top edge stays, the bottom edge moves, and both
+/// fragments close. Vertical: cut in two.
+fn split_rule(it: &Placed, at: &RuleCut, a: &mut Vec<Placed>, b: &mut Vec<Placed>) {
+    let Placed::Rule { x0, y0, x1, y1, border } = it else { return };
+    let rule = |y0: f32, y1: f32| Placed::Rule { x0: *x0, y0, x1: *x1, y1, border: *border };
+    if (y0 - y1).abs() >= 0.01 {
+        let (t, bt) = (y0.min(*y1), y0.max(*y1));
+        if t < at.cut {
+            a.push(rule(t, bt.min(at.cut)));
+        }
+        if bt > at.cut {
+            let shift = if bt >= at.height - 0.01 { at.rest } else { at.shift };
+            b.push(rule((t - shift).max(0.0), bt - shift));
+        }
+    } else if *y0 <= 0.01 {
+        a.push(it.clone());
+        if at.reopen {
+            b.push(rule(0.0, 0.0));
+        }
+    } else if *y0 >= at.height - 0.01 {
+        a.push(rule(at.cut, at.cut));
+        b.push(rule(y0 - at.rest, y1 - at.rest));
+    } else if *y0 <= at.cut {
+        a.push(it.clone());
+        if at.edge.is_some_and(|top| (y0 - top).abs() < 0.01) {
+            b.push(rule(y0 - at.shift, y1 - at.shift));
+        }
+    } else {
+        b.push(rule(y0 - at.shift, y1 - at.shift));
+    }
+}
+
+/// The top edge of a nested table's row that opens the continuation of a split row.
+struct NestedTop {
+    /// Where its top edge is in the row, when the border it opens with isn't known: the borders
+    /// drawn on that edge go on with it.
+    edge: Option<f32>,
+    /// The borders it opens with: from where to where, and the border.
+    rules: Vec<(f32, f32, Border)>,
+}
+
+/// For each cell of a row being split, the nested table's row that opens the part that goes on,
+/// if one does: a row that moves on whole (by `splits`) with the first thing of its cell to move
+/// on in it. `moved`, the top of that first thing, becomes the top of what the continuation
+/// starts with.
+///
+/// Such a row opens the part as the outer row does: under the border it would have as its
+/// table's first row (`tops`), its text clear of that one. Without `tops` it keeps the edge it
+/// has in its table, border and band.
+fn nested_openers(
+    cells: &CellItems<'_>,
+    splits: &[Vec<usize>],
+    moved: &mut [f32],
+    own_depth: Option<usize>,
+    tops: Option<&RowTops>,
+) -> Vec<Option<NestedTop>> {
+    let mut opened: Vec<Option<NestedTop>> = Vec::with_capacity(cells.len());
+    for ((items, splits), m) in cells.iter().zip(splits).zip(moved) {
+        opened.push(None);
+        if *m == f32::MAX {
+            continue;
+        }
+        // Each nested row's story, top and bottom, whether none of its text stays on this page,
+        // and its cells' numbers and sides.
+        type Row<'a> = ((StoryRef, &'a [u32], usize), (f32, f32, bool), Vec<(usize, f32, f32)>);
+        let mut nested: Vec<Row> = Vec::new();
+        for it in items.iter() {
+            let Placed::Cell { rect, table, row: r, cell: ci, story, covered: false, .. } = it else { continue };
+            if Some(table.0.len()) <= own_depth {
+                continue;
+            }
+            let of_cell = |path: &wordcraft_doc::Path| {
+                path.0.get(..table.0.len()) == Some(table.0.as_slice())
+                    && path.0.get(table.0.len()) == u32::try_from(*r).ok().as_ref()
+                    && path.0.get(table.0.len() + 1) == u32::try_from(*ci).ok().as_ref()
+            };
+            let moves = items.iter().zip(splits).all(|(o, &split)| match o {
+                Placed::Lines { story: own, path, l0, .. } => !(own == story && of_cell(path) && split > *l0),
+                _ => true,
+            });
+            let side = (*ci, rect.x, rect.x + rect.w);
+            match nested.iter_mut().find(|(key, ..)| *key == (*story, table.0.as_slice(), *r)) {
+                Some((_, (top, bottom, whole), sides)) => {
+                    (*top, *bottom, *whole) = (top.min(rect.y), bottom.max(rect.bottom()), *whole && moves);
+                    sides.push(side);
+                }
+                None => nested.push(((*story, table.0.as_slice(), *r), (rect.y, rect.bottom(), moves), vec![side])),
+            }
+        }
+        // The outermost of them that the first thing to move on is in.
+        let first = nested
+            .into_iter()
+            .filter(|(_, (top, bottom, whole), _)| *whole && *top < *m - 0.01 && *bottom > *m)
+            .min_by(|a, b| a.1.0.total_cmp(&b.1.0));
+        let Some(((story, table, r), (top, ..), sides)) = first else { continue };
+        let known = tops.and_then(|t| t.get(&(story, table.to_vec(), r)));
+        let rules = known
+            .map(|k| {
+                sides
+                    .iter()
+                    .filter_map(|&(ci, x0, x1)| k.borders.get(ci).copied().flatten().filter(Border::is_visible).map(|b| (x0, x1, b)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        *m = top - known.map_or(0.0, |k| k.lift);
+        if let Some(o) = opened.last_mut() {
+            *o = Some(NestedTop { edge: known.is_none().then_some(top), rules });
+        }
+    }
+    opened
 }
 
 /// `row` as it stands at the top of a page the table doesn't start on: each cell opens with the

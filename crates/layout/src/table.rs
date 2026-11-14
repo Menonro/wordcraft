@@ -47,6 +47,25 @@ pub struct CellPart {
     /// How far a cell aligned to the middle or bottom of its row moved its content down, for
     /// splitting the row; `None` for a cell at the top.
     pub(crate) align: Option<CellAlign>,
+    /// Its top edge where the row starts, or goes on, at the top of a page; `None` for a cell
+    /// covered by a vertical merge and in a row of an exact height.
+    pub(crate) page_top: Option<PageTop>,
+}
+
+/// A cell's top edge where its row starts, or goes on, at the top of a page the table doesn't
+/// start on. Word draws there the border the row would have as the table's first row, the cell's
+/// own top border or else the table's, and keeps the text clear of that one; the border between
+/// the row and the one above stays behind on the page before.
+#[derive(Clone)]
+pub(crate) struct PageTop {
+    /// That border.
+    pub border: Option<Border>,
+    /// From where to where it runs.
+    pub x: (f32, f32),
+    /// How much further down than in the row its band puts the cell's content (negative: up).
+    pub lift: f32,
+    /// The cell's content in the row's `items`.
+    pub content: std::ops::Range<usize>,
 }
 
 /// The vertical alignment applied to a cell's content (see [`CellPart::align`]).
@@ -379,6 +398,11 @@ struct CellBox {
     turned: Option<Turned>,
     /// Where the content ends below the cell's top (before vertical alignment).
     end: f32,
+    /// The border the cell would have at its top in the table's first row, and how much wider
+    /// its band is than the one the cell's content is laid out under (see [`PageTop`]).
+    opening: Option<Border>,
+    lift: f32,
+    open_band: f32,
 }
 
 struct TableFrame {
@@ -600,7 +624,8 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         // row, the text of its neighbour without a border starts 3 pt lower too; so it does
         // beside a cell that continues a vertical merge and has the table's inside border.
         let mut row_borders_of: Vec<Borders> = Vec::with_capacity(row.cells.len());
-        let (mut band_t, mut band_b) = (0.0f32, 0.0f32);
+        let mut openings: Vec<Option<Border>> = Vec::with_capacity(row.cells.len());
+        let (mut band_t, mut band_b, mut band_o) = (0.0f32, 0.0f32, 0.0f32);
         let mut at = row.first_grid();
         for cell in &row.cells {
             let (g, span) = (at, cell.span());
@@ -653,6 +678,14 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
             if rtl {
                 std::mem::swap(&mut borders.left, &mut borders.right);
             }
+            // Where the row starts, or goes on, at the top of a page Word opens it with the border
+            // it would have as the table's first row: the cell's own top border, else the table's.
+            // Neither the inside border nor the border under the row above is drawn there
+            // (measured in Word for Windows: with 0.5 pt inside borders and a 3 pt border round the
+            // table the text starts 3 pt under the page's top; with inside borders alone, at it).
+            let opening = cb.top.or(row_borders.top).or(tb.top);
+            openings.push(opening);
+            band_o = band_o.max(opening.as_ref().map_or(0.0, border_band));
             // Word keeps the cell's text clear of its top border (and the last row's of its bottom
             // border): the room the border takes ([`border_band`]) sits on top of the cell margin.
             let band = |b: Option<Border>| b.as_ref().map_or(0.0, border_band);
@@ -791,6 +824,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
                 span,
                 turned,
                 end,
+                opening: openings.get(ci).copied().flatten(),
+                lift: band_o - band_t,
+                open_band: band_o,
             });
             g += span;
         }
@@ -969,7 +1005,8 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 it.translate(0.0, dy);
                 items.push(it);
             }
-            let align = (dy > 0.0 || aligned).then_some(CellAlign { content: content..items.len(), valign: c.valign, dy, height: align_h });
+            let content = content..items.len();
+            let align = (dy > 0.0 || aligned).then_some(CellAlign { content: content.clone(), valign: c.valign, dy, height: align_h });
             let b = c.borders;
             let (x0, x1, y0, y1) = (c.x, c.x + c.w, 0.0, rh);
             // Horizontal edges run on over half of each visible vertical edge, so the corners
@@ -999,8 +1036,11 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
                 story,
                 clip: exact && c.h > span_h + 0.01,
             });
-            let top = c.margins[0] + c.borders.top.as_ref().map_or(0.0, border_band);
-            parts.push(CellPart { top, items: first..items.len(), end, align });
+            // On a continuation the cell opens with the border of a first row (see [`PageTop`]):
+            // every cell of the row keeps clear of the widest of them.
+            let top = c.margins[0] + c.open_band;
+            let page_top = (c.vmerge != VMerge::Continue && !exact).then_some(PageTop { border: c.opening, x: (hx0, hx1), lift: c.lift, content });
+            parts.push(CellPart { top, items: first..items.len(), end, align, page_top });
         }
         out.push(RowLayout {
             height: rh,
@@ -1265,9 +1305,12 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                 Placed::Rule { x0, y0, x1, y1, border } => {
                     if (y0 - y1).abs() < 0.01 {
                         // Horizontal: the top edge stays, the bottom edge moves; both fragments close.
+                        // The continuation opens with its own border (below).
                         if *y0 <= 0.01 {
                             a.push(it.clone());
-                            b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
+                            if c.page_top.is_none() {
+                                b.push(Placed::Rule { x0: *x0, y0: 0.0, x1: *x1, y1: 0.0, border: *border });
+                            }
                         } else if *y0 >= row.height - 0.01 {
                             a.push(Placed::Rule { x0: *x0, y0: cut, x1: *x1, y1: cut, border: *border });
                             b.push(Placed::Rule { x0: *x0, y0: y0 - rest, x1: *x1, y1: y1 - rest, border: *border });
@@ -1289,7 +1332,12 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool) -> Option<(RowLa
                 }
             }
         }
-        parts.push(CellPart { top: c.top, items: start..b.len(), end: end.map(|e| e - shift), align: None });
+        // The border the part that goes on opens with at the top of its page.
+        let page_top = c.page_top.as_ref().map(|t| PageTop { border: t.border, x: t.x, lift: 0.0, content: 0..0 });
+        if let Some(PageTop { border: Some(border), x, .. }) = page_top.as_ref().filter(|t| t.border.is_some_and(|e| e.is_visible())) {
+            b.push(Placed::Rule { x0: x.0, y0: 0.0, x1: x.1, y1: 0.0, border: *border });
+        }
+        parts.push(CellPart { top: c.top, items: start..b.len(), end: end.map(|e| e - shift), align: None, page_top });
     }
     // The part left on the page is placed and never split again.
     Some((
@@ -1334,6 +1382,77 @@ pub fn grow_to_floor(row: &mut RowLayout, room: f32) {
         }
     }
     row.height = height;
+}
+
+/// `row` as it stands at the top of a page the table doesn't start on: each cell opens with the
+/// border of a first row (see [`PageTop`]) and its content keeps clear of that one, so the row
+/// is as much taller or shorter as that border's band differs from the one the row has under
+/// the row above.
+///
+/// `None` when the row stays as it is: a row with a cell covered by a vertical merge or of an
+/// exact height, and one whose cells would move by different amounts.
+pub fn at_page_top(row: &RowLayout) -> Option<RowLayout> {
+    let lift = row.cells.first()?.page_top.as_ref()?.lift;
+    let same = |c: &CellPart| c.page_top.as_ref().is_some_and(|t| (t.lift - lift).abs() < 0.01);
+    // Also rejects NaN.
+    if !(lift.abs() < 1000.0 && row.height + lift > 0.0 && row.cells.iter().all(same)) {
+        return None;
+    }
+    let mut items = Vec::with_capacity(row.items.len() + row.cells.len());
+    let mut cells = Vec::with_capacity(row.cells.len());
+    for c in &row.cells {
+        let top = c.page_top.as_ref()?;
+        let first = items.len();
+        let mut content = first..first;
+        for i in c.items.clone() {
+            let it = row.items.get(i)?;
+            if top.content.contains(&i) {
+                if i == top.content.start {
+                    content.start = items.len();
+                }
+                let mut it = it.clone();
+                it.translate(0.0, lift);
+                items.push(it);
+                content.end = items.len();
+                continue;
+            }
+            // The cell's own area, shading and borders: they start at the row's top and run on
+            // to its bottom, which moves.
+            match it {
+                // The border the cell has in the row: the opening one replaces it (below).
+                Placed::Rule { y0, y1, .. } if (y0 - y1).abs() < 0.01 && *y0 <= 0.01 => {}
+                Placed::Rule { x0, y0, x1, y1, border } if (y0 - y1).abs() >= 0.01 => {
+                    items.push(Placed::Rule { x0: *x0, y0: y0.min(*y1), x1: *x1, y1: y0.max(*y1) + lift, border: *border });
+                }
+                Placed::Fill { rect, color } => {
+                    items.push(Placed::Fill { rect: Rect::new(rect.x, rect.y, rect.w, (rect.h + lift).max(0.0)), color: *color })
+                }
+                Placed::Cell { .. } | Placed::Clip { .. } => {
+                    let mut it = it.clone();
+                    if let Placed::Cell { rect, .. } | Placed::Clip { rect, .. } = &mut it {
+                        rect.h = (rect.h + lift).max(0.0);
+                    }
+                    items.push(it);
+                }
+                _ => {
+                    let mut it = it.clone();
+                    it.translate(0.0, lift);
+                    items.push(it);
+                }
+            }
+        }
+        if let Some(border) = top.border.filter(Border::is_visible) {
+            items.push(Placed::Rule { x0: top.x.0, y0: 0.0, x1: top.x.1, y1: 0.0, border });
+        }
+        cells.push(CellPart {
+            top: c.top,
+            items: first..items.len(),
+            end: c.end.map(|e| e + lift),
+            align: c.align.as_ref().map(|al| CellAlign { content: content.clone(), valign: al.valign, dy: al.dy, height: al.height + lift }),
+            page_top: Some(PageTop { border: top.border, x: top.x, lift: 0.0, content }),
+        });
+    }
+    Some(RowLayout { height: row.height + lift, items, bottom: row.bottom, edge: row.edge, floor: row.floor, cells })
 }
 
 type CellItems<'a> = Vec<std::borrow::Cow<'a, [Placed]>>;

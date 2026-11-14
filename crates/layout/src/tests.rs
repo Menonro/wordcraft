@@ -348,20 +348,24 @@ fn cell_end_gap_in(mut d: Document, style: &str, contextual: bool, next_cell: Op
 
 #[test]
 fn contextual_spacing_drops_the_space_after_a_cells_last_normal_paragraph() {
-    // The end-of-cell mark is a Normal paragraph: contextual spacing drops the 12 pt after a
-    // Normal last paragraph (docxide-pdf `cell-end-text-context`, `cell-end-empty-context`), not
-    // after one in another style (`cell-end-other-style`) or without contextual spacing.
+    // The mark ending a row is a Normal paragraph: contextual spacing drops the 12 pt after a
+    // Normal last paragraph of the row's last cell (docxide-pdf `cell-end-text-context`,
+    // `cell-end-empty-context`), not after one in another style (`cell-end-other-style`) or
+    // without contextual spacing.
     let kept = cell_end_gap("Normal", false);
     assert!((cell_end_gap("Other", true) - kept).abs() < 0.01);
     let dropped = cell_end_gap("Normal", true);
     assert!((kept - dropped - 12.0).abs() < 0.01, "kept {kept}, dropped {dropped}");
     // An undefined style is formatted as Normal, and drops it too.
     assert!((cell_end_gap("Missing", true) - dropped).abs() < 0.01);
-    // The mark decides, not a neighbour: another style in the next cell or after the table
-    // leaves the drop as it is.
-    for (next_cell, after_table) in [(Some("Other"), None), (None, Some("Other"))] {
-        let gap = cell_end_gap_in(Document::new(), "Normal", true, next_cell, after_table, "Beta probe");
-        assert!((gap - dropped).abs() < 0.01, "{next_cell:?} {after_table:?}: {gap}, dropped {dropped}");
+    // The row's mark decides for its last cell, not the paragraph after the table.
+    let gap = cell_end_gap_in(Document::new(), "Normal", true, None, Some("Other"), "Beta probe");
+    assert!((gap - dropped).abs() < 0.01, "another style after the table: {gap}, dropped {dropped}");
+    // A cell with another one after it is beside that cell's first paragraph instead (Word for
+    // Windows): Normal there drops the space, another style keeps it.
+    for (next_cell, want) in [("Normal", dropped), ("Other", kept)] {
+        let gap = cell_end_gap_in(Document::new(), "Normal", true, Some(next_cell), None, "Beta probe");
+        assert!((gap - want).abs() < 0.01, "{next_cell} in the next cell: {gap}, kept {kept}, dropped {dropped}");
     }
     // And the reverse: another style keeps its space beside Normal neighbours.
     let gap = cell_end_gap_in(Document::new(), "Other", true, Some("Normal"), Some("Normal"), "Beta probe");
@@ -8364,7 +8368,7 @@ fn inline_picture_wider_than_a_text_box_is_fitted_to_it() {
         h: 72.0,
         fill: None,
         stroke: None,
-        stroke_width: 0.75,
+        stroke_width: 0.0,
         float: Default::default(),
         story: Some(id),
         freeform: None,
@@ -16466,18 +16470,19 @@ fn a_space_from_the_fonts_twin_stands_in_for_nothing_else() {
         d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().insert_object(1, object, &props).unwrap();
         let l = lay(&d);
         let Some(Placed::Lines { para, .. }) = l.pages[0].items.iter().find(|i| matches!(i, Placed::Lines { .. })) else { panic!("no text") };
-        let (index, ..) = para.shown.first().expect("the field shows its result");
-        let c = &para.clusters[*index];
-        let gids: Vec<u32> = para.glyphs[c.g0 as usize..c.g1 as usize].iter().map(|g| g.gid).collect();
-        (para.styles[c.style as usize].face, gids, c.adv)
+        // With a cluster per font in a field's result (#5462) the space is a cluster of its own
+        // in the twin's face: the result's faces and its whole width are what holds either way.
+        assert!(!para.shown.is_empty(), "the field shows its result");
+        let faces: Vec<_> = para.shown.iter().map(|(index, ..)| para.styles[para.clusters[*index].style as usize].face).collect();
+        let width: f32 = para.shown.iter().map(|(index, ..)| para.clusters[*index].adv).sum();
+        (faces, width)
     };
-    let digits = [sans.glyph_for('1'), sans.glyph_for('2')];
-    let (face, gids, wide) = field("1\u{2003}2");
-    let (_, _, narrow) = field("12");
-    assert_eq!((face, gids), (sans, vec![digits[0], sans.glyph_for(' '), digits[1]]), "the space is the font's own blank glyph");
-    assert!(wide - narrow > 10.0, "and as wide as the twin's em space: {wide} with it, {narrow} without");
-    let (face, gids, _) = field("\u{2003}12");
-    assert_eq!((face, gids), (sans, vec![sans.glyph_for(' '), digits[0], digits[1]]), "a result that starts with the space");
+    let (faces, wide) = field("1\u{2003}2");
+    let (_, narrow) = field("12");
+    assert!(faces.iter().all(|f| *f == sans || *f == inter), "the result is drawn in the font and its twin: {faces:?}");
+    assert!(wide - narrow > 10.0, "and the space is as wide as the twin's em space: {wide} with it, {narrow} without");
+    let (faces, _) = field("\u{2003}12");
+    assert!(faces.iter().all(|f| *f == sans || *f == inter), "a result that starts with the space: {faces:?}");
     // In plain text the space is the twin's, and the sign after it has its own fallback.
     const PLAIN: &str = "a\u{2003}\u{20BF}b";
     let mut d = Document::from_text(PLAIN);

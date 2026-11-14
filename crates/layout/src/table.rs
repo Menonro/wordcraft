@@ -852,7 +852,7 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         if depth > 1 && !(row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
             let lift = cells.first().map_or(0.0, |c| c.lift);
             if lift.is_finite() && cells.iter().all(|c| c.vmerge != VMerge::Continue && (c.lift - lift).abs() < 0.01) {
-                let band = cells.iter().map(|c| c.opening.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0))).fold(0.0, f32::max);
+                let band = cells.iter().map(|c| c.open_band).fold(0.0, f32::max);
                 ctx.row_tops
                     .insert((story, path.to_vec(), ri), RowTop { lift, top: row_top + band, borders: cells.iter().map(|c| c.opening).collect() });
             } else {

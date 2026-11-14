@@ -1098,14 +1098,14 @@ fn finish_table_rows(ctx: &mut Ctx, input: TableRows<'_>) -> TableLayout {
 /// [`grow_to_floor`]).
 #[cfg(test)]
 pub fn split_row(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
-    split_row_with(row, cut, false, None)
+    split_row_with(row, cut, false, None, false)
 }
 
 /// [`split_row`] or [`split_row_keeping_cells`] (`whole_cells`) where the rows of the tables in
 /// the row's cells are known: one of them that moves on whole opens the continuation with the
 /// border in `tops`. This is the split the page flow places.
-pub(crate) fn split_row_opening(row: &RowLayout, cut: f32, whole_cells: bool, tops: &RowTops) -> Option<(RowLayout, RowLayout)> {
-    split_row_with(row, cut, whole_cells, Some(tops))
+pub(crate) fn split_row_opening(row: &RowLayout, cut: f32, whole_cells: bool, tops: &RowTops, under_headers: bool) -> Option<(RowLayout, RowLayout)> {
+    split_row_with(row, cut, whole_cells, Some(tops), under_headers)
 }
 
 /// [`split_row`] for the first part of a row on a page that already holds something: `None`
@@ -1115,10 +1115,10 @@ pub(crate) fn split_row_opening(row: &RowLayout, cut: f32, whole_cells: bool, to
 /// other cells' text beside an empty cell, the row moves on whole (see `docs/layout-parity.md`,
 /// Tables). Content of a cell aligned below the cut doesn't count.
 pub fn split_row_keeping_cells(row: &RowLayout, cut: f32) -> Option<(RowLayout, RowLayout)> {
-    split_row_with(row, cut, true, None)
+    split_row_with(row, cut, true, None, false)
 }
 
-fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&RowTops>) -> Option<(RowLayout, RowLayout)> {
+fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&RowTops>, under_headers: bool) -> Option<(RowLayout, RowLayout)> {
     // Also rejects a NaN cut.
     if !(cut > 0.0 && cut < row.height) {
         return None;
@@ -1343,7 +1343,7 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&Ro
                 }
                 Placed::Rule { .. } => {
                     let at =
-                        RuleCut { cut, height: row.height, rest, shift, reopen: c.page_top.is_none(), edge: opened.as_ref().and_then(|o| o.edge) };
+                        RuleCut { cut, height: row.height, rest, shift, reopen: under_headers || c.page_top.is_none(), edge: opened.as_ref().and_then(|o| o.edge) };
                     split_rule(it, &at, &mut a, &mut b);
                 }
             }
@@ -1354,7 +1354,7 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&Ro
         }
         // The border the part that goes on opens with at the top of its page.
         let page_top = c.page_top.as_ref().map(|t| PageTop { border: t.border, x: t.x, lift: 0.0, content: 0..0 });
-        if let Some(PageTop { border: Some(border), x, .. }) = page_top.as_ref().filter(|t| t.border.is_some_and(|e| e.is_visible())) {
+        if let Some(PageTop { border: Some(border), x, .. }) = page_top.as_ref().filter(|t| !under_headers && t.border.is_some_and(|e| e.is_visible())) {
             b.push(Placed::Rule { x0: x.0, y0: 0.0, x1: x.1, y1: 0.0, border: *border });
         }
         parts.push(CellPart { top: c.top, items: start..b.len(), end: end.map(|e| e - shift), align: None, page_top });
@@ -1484,8 +1484,7 @@ fn nested_openers(
             continue;
         }
         // The nested rows the first thing to move on is in, from the outermost in.
-        let mut rows = nested_rows(items, splits, own_depth);
-        rows.retain(|r| r.bottom > *m && if r.whole { r.top < *m - 0.01 } else { r.top <= *m });
+        let mut rows = nested_rows(items, splits, own_depth, *m);
         rows.sort_by_key(|r| r.table.len());
         let (mut room, mut top, mut edge, mut rules) = (0.0f32, *m, None, Vec::new());
         for r in &rows {
@@ -1528,11 +1527,11 @@ struct NestedRow<'a> {
 }
 
 /// The rows of the tables inside a cell with `items`, of which `splits` says what stays.
-fn nested_rows<'a>(items: &'a [Placed], splits: &[usize], own_depth: Option<usize>) -> Vec<NestedRow<'a>> {
+fn nested_rows<'a>(items: &'a [Placed], splits: &[usize], own_depth: Option<usize>, at: f32) -> Vec<NestedRow<'a>> {
     let mut rows: Vec<NestedRow<'a>> = Vec::new();
     for it in items {
         let Placed::Cell { rect, table, row, cell, story, covered: false, .. } = it else { continue };
-        if Some(table.0.len()) <= own_depth {
+        if Some(table.0.len()) <= own_depth || !(rect.y <= at && rect.bottom() > at) {
             continue;
         }
         let of_cell = |path: &wordcraft_doc::Path| {

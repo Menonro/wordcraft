@@ -1587,7 +1587,7 @@ fn split_row_with(
     }
     // Turned text moves as a whole, like a picture: it stays where it fits, unless its row goes on.
     let turned_stays = |it: &Placed, r: Rect| fits(r.bottom()) && !going.iter().any(|n| n.holds(lines_path(it)));
-    let lowered = align_in_part(row, &mut cells, &splits, &realign, &mut ends, cut);
+    let lowered = align_in_part(row, &mut cells, &splits, &realign, &mut ends, cut, &gone);
     // The top of the first thing that moves on in each cell: a row that goes on whole goes on
     // from its top.
     let mut moved: Vec<f32> = gone.iter().map(|g| g.iter().map(|g| g.top).fold(f32::MAX, f32::min)).collect();
@@ -2125,6 +2125,7 @@ fn align_in_part(
     realign: &[Option<&CellAlign>],
     ends: &mut [Option<f32>],
     cut: f32,
+    gone: &[Vec<Gone>],
 ) -> Vec<f32> {
     let mut lowered = vec![0.0; cells.len()];
     if row.cells.iter().all(|c| c.align.is_none()) {
@@ -2134,12 +2135,14 @@ fn align_in_part(
     let mut kept = f32::MIN;
     // Where what each of those cells keeps on the page ends.
     let mut own = vec![f32::MIN; cells.len()];
-    for ((((items, splits), _), end), own) in
-        cells.iter().zip(splits).zip(realign).zip(ends.iter()).zip(&mut own).filter(|(((_, al), _), _)| al.is_none())
+    for (((((items, splits), _), end), own), gone) in
+        cells.iter().zip(splits).zip(realign).zip(ends.iter()).zip(&mut own).zip(gone).filter(|((((_, al), _), _), _)| al.is_none())
     {
         // No further than the cell's content: its last paragraph may have dropped its space after.
         let stop = end.unwrap_or(f32::MAX);
-        for (it, &split) in items.iter().zip(splits) {
+        // integ (#6640 with #6580): what goes on whole with a row of a table is not kept here,
+        // though its area or picture may end above the limit (its closing border does not fit).
+        for (it, &split) in items.iter().zip(splits).filter(|(it, _)| !gone.iter().any(|g| g.takes(it, None).is_some())) {
             let bottom = match (it.turned_bounds(), it) {
                 (Some(r), _) => Some(r.bottom()),
                 // A hidden end-of-cell mark kept with its paragraph ends at the cell's content end.

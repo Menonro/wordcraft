@@ -2136,6 +2136,90 @@ fn a_paragraph_with_a_hidden_mark_goes_on_into_the_next_one() {
     assert_eq!(hit.path, Path::top(1));
 }
 
+/// From Word 2013 (compatibility mode 15) a paragraph whose mark is hidden is one paragraph with
+/// those after it, down to the one whose mark shows, and all of it is laid out with that one's
+/// formatting: its tab stops, indents, alignment and line spacing. Earlier modes keep each
+/// paragraph's own. Measured in Word for Windows in modes 15, 14, 12 and none: a tab stop at
+/// 60 pt in the first paragraph and at 30 pt in the second puts the first one's text after its
+/// tab 30 pt in from mode 15 and 60 pt in before; the second one's left indent of 40 pt moves
+/// the first one's text in from mode 15 only, and the first one's own left or first-line indent
+/// holds before mode 15 only; a first paragraph that is centred stands at the left with a
+/// left-aligned second one from mode 15; lines of exactly 30 pt in the first paragraph alone are
+/// single-spaced from mode 15. An empty paragraph with a hidden mark between the two changes
+/// none of it. (A centred or right-aligned second paragraph centres or right-aligns the line
+/// the two share as one line in Word; that is not followed, see `paragraph_props`.)
+#[test]
+fn a_paragraph_with_a_hidden_mark_takes_the_formatting_of_the_one_that_ends_its_group() {
+    use wordcraft_doc::props::{LineSpacing, TabAlign, TabStop};
+    type Format<'a> = &'a dyn Fn(&mut ParaProps);
+    let tab = |pos: f32| Some(vec![TabStop { pos, align: TabAlign::Left, leader: Default::default() }]);
+    // "a", a tab and "alpha" with a hidden mark and `first` formatting, an empty paragraph with a
+    // hidden mark too when `chain`, then "bravo" with `second`: where the first line starts,
+    // where "alpha" does and how tall the line is.
+    let laid = |mode: u32, in_cell: bool, chain: bool, first: Format, second: Format| {
+        let mut d = Document::from_text(if chain { "a\talpha\n\nbravo\ntail" } else { "a\talpha\nbravo\ntail" });
+        d.settings.compat_mode = mode;
+        let end = if chain { 2 } else { 1 };
+        for i in 0..=end {
+            let p = d.para_mut(StoryRef::Body, &Path::top(i)).unwrap();
+            (p.props.space_before, p.props.space_after) = (Some(0.0), Some(0.0));
+            p.mark.hidden = (i < end).then_some(true);
+        }
+        first(&mut d.para_mut(StoryRef::Body, &Path::top(0)).unwrap().props);
+        second(&mut d.para_mut(StoryRef::Body, &Path::top(end)).unwrap().props);
+        if in_cell {
+            let mut table = Table::new(1, 1, 400.0);
+            table.rows[0].cells[0].blocks = std::mem::take(&mut d.body);
+            d.body = vec![std::sync::Arc::new(Block::Table(table))];
+        }
+        let l = lay(&d);
+        l.pages[0]
+            .items
+            .iter()
+            .find_map(|it| match it {
+                Placed::Lines { para, x, .. } if para.text_len == 7 => Some((x + para.x_of(0, 0)?, x + para.x_of(0, 2)?, para.lines.first()?.height)),
+                _ => None,
+            })
+            .expect("the first paragraph is laid out")
+    };
+    let plain: Format = &|_| {};
+    for in_cell in [false, true] {
+        for chain in [false, true] {
+            let case = format!("in a cell: {in_cell}, through an empty paragraph: {chain}");
+            // A single-spaced line's height, and the left edge of the text (in a cell it is not
+            // the same in both modes).
+            let single = laid(15, in_cell, chain, plain, plain).2;
+            let at = |mode: u32, first: Format, second: Format| {
+                let left = laid(mode, in_cell, chain, plain, plain).0;
+                let (start, alpha, height) = laid(mode, in_cell, chain, first, second);
+                (start - left, alpha - left, height)
+            };
+            // Tab stops: the second paragraph's from mode 15, the first one's own before.
+            let (first, second): (Format, Format) = (&|p| p.tabs = tab(60.0), &|p| p.tabs = tab(30.0));
+            assert!((at(15, first, second).1 - 30.0).abs() < 0.01, "{case}: alpha {} pt in", at(15, first, second).1);
+            assert!((at(14, first, second).1 - 60.0).abs() < 0.01, "{case}, mode 14: alpha {} pt in", at(14, first, second).1);
+            // The second paragraph's left indent, and its alignment.
+            let indent: Format = &|p| p.indent_left = Some(40.0);
+            assert!((at(15, plain, indent).0 - 40.0).abs() < 0.01, "{case}: the line starts {} pt in", at(15, plain, indent).0);
+            assert!(at(14, plain, indent).0.abs() < 0.01, "{case}, mode 14: the line starts {} pt in", at(14, plain, indent).0);
+            // A centred first paragraph before a left-aligned one stands at the left from mode 15.
+            let centre: Format = &|p| p.align = Some(Align::Center);
+            assert!(at(15, centre, plain).0.abs() < 0.01, "{case}: the line starts {} pt in", at(15, centre, plain).0);
+            assert!(at(14, centre, plain).0 > 100.0, "{case}, mode 14: the centred line starts {} pt in", at(14, centre, plain).0);
+            // The first paragraph's own indents and line spacing hold before mode 15 only.
+            for (what, own, was) in
+                [("a left indent", indent, 40.0), ("a first-line indent", &(|p: &mut ParaProps| p.indent_first = Some(20.0)) as Format, 20.0)]
+            {
+                assert!(at(15, own, plain).0.abs() < 0.01, "{case}, {what} of its own: the line starts {} pt in", at(15, own, plain).0);
+                assert!((at(14, own, plain).0 - was).abs() < 0.01, "{case}, {what} of its own, mode 14: {} pt in", at(14, own, plain).0);
+            }
+            let exact: Format = &|p| p.line_spacing = Some(LineSpacing::Exactly(30.0));
+            assert!((at(15, exact, plain).2 - single).abs() < 0.01, "{case}: its line is {} pt tall, a single one {single}", at(15, exact, plain).2);
+            assert!((at(14, exact, plain).2 - 30.0).abs() < 0.01, "{case}, mode 14: its line is {} pt tall", at(14, exact, plain).2);
+        }
+    }
+}
+
 #[test]
 fn text_going_on_from_a_larger_heading_sits_on_its_baseline() {
     // A heading with a hidden mark followed by body text (a style separator in Word, #3986): the

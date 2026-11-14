@@ -22,7 +22,7 @@ mod builder;
 pub(crate) use builder::TEST_TWINS;
 mod chars;
 mod grid;
-mod justify;
+pub(crate) mod justify;
 mod lines;
 mod model;
 mod paragraph;

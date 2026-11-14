@@ -97,18 +97,38 @@ fn is_special(c: char) -> bool {
     matches!(c, '\t' | LINE_BREAK | PAGE_BREAK | COLUMN_BREAK | OBJ | '\r')
 }
 
-/// The paragraph's formatting: its style's, the table's and the list level's indents.
+/// The paragraph's formatting: its style's, the table's and the list level's indents. A paragraph
+/// whose mark is hidden has the alignment, indents, tab stops and line spacing of the one that
+/// ends its group instead ([`ParaEnv::format_from`]); its space before and its list number stay
+/// its own.
+/// shortcut: a group that ends centred or right-aligned keeps the alignment of each of its
+/// paragraphs. Word sets the line two of them share as one line, which takes laying the next
+/// paragraph's first line out before this one's last is placed; upgrade with the shared line
+/// placed as a whole in `Joint::fit`.
 fn paragraph_props(p: &Paragraph, env: &ParaEnv) -> ResolvedPara {
     let doc = env.doc;
-    let mut rp = doc.styles.resolve_para_in(&p.props, env.table.map(|t| &t.para));
+    // A paragraph's formatting by itself, its indents in characters measured in its mark's font size.
+    let own = |p: &Paragraph| {
+        let mut rp = doc.styles.resolve_para_in(&p.props, env.table.map(|t| &t.para));
+        if rp.indent_chars.iter().any(|c| *c != 0.0) {
+            rp.set_char_unit(doc.styles.resolve_char_in(p.props.style.as_deref(), env.table.map(|t| &t.chr), &p.mark).size);
+        }
+        rp
+    };
+    let mut rp = own(p);
+    match env.format_from.map(own) {
+        Some(end) => {
+            if matches!(end.align, wordcraft_doc::props::Align::Left | wordcraft_doc::props::Align::Justify) {
+                rp.align = end.align;
+            }
+            (rp.indent_left, rp.indent_right, rp.indent_first) = (end.indent_left, end.indent_right, end.indent_first);
+            (rp.indent_chars, rp.tabs, rp.line_spacing) = (end.indent_chars, end.tabs, end.line_spacing);
+        }
+        None => list_indents(&mut rp, p, env),
+    }
     if let Some(spacing) = env.read_line_spacing.filter(|s| s.is_finite() && (1.0..=2.0).contains(s)) {
         rp.line_spacing = wordcraft_doc::props::LineSpacing::Multiple(spacing);
     }
-    // Indents in characters are measured in the paragraph mark's font size.
-    if rp.indent_chars.iter().any(|c| *c != 0.0) {
-        rp.set_char_unit(doc.styles.resolve_char_in(p.props.style.as_deref(), env.table.map(|t| &t.chr), &p.mark).size);
-    }
-    list_indents(&mut rp, p, env);
     // ODF (XSL's box model): padding takes room whether or not a side has a border.
     if doc.settings.odf.is_some() {
         odf_padding(&mut rp);

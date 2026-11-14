@@ -1293,6 +1293,13 @@ fn align_in_part(
             }
         }
     }
+    // A cell aligned to the middle or bottom whose text all stays is text kept as well, and the
+    // others line up against it too. Measured in Word for Windows: beside a centred cell of four
+    // lines that stays whole and a top cell that keeps three, a centred cell of two lines starts
+    // one line down, one of three half a line, and a bottom cell of one line three lines down.
+    if kept > f32::MIN {
+        kept = ends.iter().zip(realign).filter(|(_, al)| al.is_some()).filter_map(|(end, _)| *end).fold(kept, f32::max);
+    }
     // The part of an at-least row is at least as tall as the row's height says (see
     // `grow_to_floor`), whatever room the page has under it, and its cells line up within that.
     // Measured in Word for Windows: a row of at least 12.75 pt that keeps one line of 9.2 pt has

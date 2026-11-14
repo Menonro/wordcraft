@@ -69,8 +69,10 @@ fn frame(body: &TextBody, w: f32, h: f32) -> (f32, f32) {
 /// The width stacked text is laid out in (a paragraph's narrowest).
 const STACK_WIDTH: f32 = 12.0;
 
-/// Lay `blocks` of story `id` out in lines `len` long; stacked text one letter to a line.
-fn lay(ctx: &mut Ctx, id: u32, blocks: &Blocks, len: f32, vert: TextVert, depth: usize) -> Vec<Placed> {
+/// Lay `blocks` of story `id` out in lines `len` long; stacked text one letter to a line. With
+/// the items, how deep text that runs across reaches: the space after its last paragraph is part
+/// of a box's text, though nothing is drawn in it (Word).
+fn lay(ctx: &mut Ctx, id: u32, blocks: &Blocks, len: f32, vert: TextVert, depth: usize) -> (Vec<Placed>, f32) {
     let story = StoryRef::Part(id);
     if vert == TextVert::Stacked {
         // One letter to a line: words may break anywhere, and each letter takes the narrowest
@@ -90,9 +92,11 @@ fn lay(ctx: &mut Ctx, id: u32, blocks: &Blocks, len: f32, vert: TextVert, depth:
                 _ => b.clone(),
             })
             .collect();
-        return layout_box(ctx, BoxInput::other(story, &stacked, STACK_WIDTH, depth + 1, None)).items;
+        return (layout_box(ctx, BoxInput::other(story, &stacked, STACK_WIDTH, depth + 1, None)).items, 0.0);
     }
-    layout_box(ctx, BoxInput::other(story, blocks, len, depth + 1, None)).items
+    let laid = layout_box(ctx, BoxInput::other(story, blocks, len, depth + 1, None));
+    let flow = if vert.turn() == TextDirection::Horizontal { laid.height } else { 0.0 };
+    (laid.items, flow)
 }
 
 /// The part of a shape's frame `rect` its text is set in: inside `inset`, the shape's text
@@ -122,9 +126,9 @@ pub(crate) fn box_items(ctx: &mut Ctx, id: u32, rect: Rect, inset: [f32; 4], dep
     // text rectangle was taken into account. Word cuts at the text rectangle's bottom; cutting
     // there would hide lines that show now, so the cut is left where it was.
     let (_, room) = frame(&body, rect.w, rect.h);
-    let (items, rect) = match chain_share(ctx, id, depth) {
+    let (items, rect, flow) = match chain_share(ctx, id, depth) {
         // A linked chain is split over its boxes' whole frames (`flow`).
-        Some(items) => (items, rect),
+        Some(items) => (items, rect, 0.0),
         None => {
             if !ctx.boxes.enter(id) {
                 return Vec::new();
@@ -132,20 +136,21 @@ pub(crate) fn box_items(ctx: &mut Ctx, id: u32, rect: Rect, inset: [f32; 4], dep
             let rect = text_rect(&body, rect, inset);
             let (len, _) = frame(&body, rect.w, rect.h);
             let blocks = ctx.doc.parts.get(&id).map(|p| p.blocks.clone()).unwrap_or_default();
-            let inner = lay(ctx, id, &blocks, len, body.vert, depth);
+            let (inner, flow) = lay(ctx, id, &blocks, len, body.vert, depth);
             ctx.boxes.leave();
             // Text that doesn't fit inside the margins is hidden, as in Word; a box that resizes
             // to fit its text shows it all (#743).
-            (if body.auto_fit { inner } else { fit_box(inner, room) }, rect)
+            (if body.auto_fit { inner } else { fit_box(inner, room) }, rect, flow)
         }
     };
     let (_, across) = frame(&body, rect.w, rect.h);
-    place(items, &body, rect, across)
+    place(items, &body, rect, (across, flow))
 }
 
 /// The height of a `w` wide text box `id` that resizes to fit its text (`a:spAutoFit`): its text's
-/// depth plus its top and bottom margins, as Word fits it when laying the document out. `None`
-/// for a box that keeps its own height: one that doesn't resize, with turned text, or linked.
+/// depth, the space after its last paragraph included, plus its top and bottom margins, as Word
+/// fits it when laying the document out. `None` for a box that keeps its own height: one that
+/// doesn't resize, with turned text, or linked.
 pub(crate) fn fitted_height(ctx: &mut Ctx, id: u32, w: f32, inset: [f32; 4]) -> Option<f32> {
     let body = ctx.doc.parts.get(&id).map(|p| p.body)?;
     if !body.auto_fit || body.vert.turn() != TextDirection::Horizontal || body.next.is_some() {
@@ -164,18 +169,19 @@ pub(crate) fn fitted_height(ctx: &mut Ctx, id: u32, w: f32, inset: [f32; 4]) -> 
     let (len, _) = frame(&body, w - gl - gr, 0.0);
     // Measuring doesn't count the box's list numbers and equations: `box_items` lays it out again.
     let snap = (ctx.counters.clone(), ctx.eq_count);
-    let items = lay(ctx, id, &blocks, len, body.vert, 0);
+    let (items, flow) = lay(ctx, id, &blocks, len, body.vert, 0);
     (ctx.counters, ctx.eq_count) = snap;
     ctx.boxes.leave();
     let [_, t, _, b] = body.insets_pt();
-    let h = extent(&items) + t + b + gt + gb;
+    let h = extent(&items).max(flow) + t + b + gt + gb;
     h.is_finite().then_some(h)
 }
 
 /// Move items laid out in a box's frame onto the page: aligned in the `across` room (top,
-/// middle, bottom; for turned text, from the side its lines start on) and turned.
-fn place(mut items: Vec<Placed>, body: &TextBody, rect: Rect, across: f32) -> Vec<Placed> {
-    let used = extent(&items);
+/// middle, bottom; for turned text, from the side its lines start on) and turned. The text is as
+/// deep as its flow (`flow`), which ends after the space after its last paragraph.
+fn place(mut items: Vec<Placed>, body: &TextBody, rect: Rect, (across, flow): (f32, f32)) -> Vec<Placed> {
+    let used = extent(&items).max(flow);
     let off = match body.anchor {
         VAlign::Top => 0.0,
         VAlign::Center => ((across - used) / 2.0).max(0.0),
@@ -345,7 +351,7 @@ fn flow(ctx: &mut Ctx, chain: &[u32], depth: usize) -> Vec<Vec<Placed>> {
             Some((_, items)) => items.clone(),
             None => {
                 (ctx.counters, ctx.eq_count) = (snap.0.clone(), snap.1);
-                let items = lay(ctx, head, &blocks, len, body.vert, depth);
+                let items = lay(ctx, head, &blocks, len, body.vert, depth).0;
                 after.get_or_insert_with(|| (ctx.counters.clone(), ctx.eq_count));
                 #[cfg(test)]
                 FLOW_LAYOUTS.with(|c| c.set(c.get().saturating_add(1)));

@@ -612,7 +612,7 @@ impl<'e> Breaker<'e> {
             let room = pl.clusters.get(tj).map_or(0.0, |c| c.adv);
             let space =
                 |k: usize| pl.clusters.get(k).is_some_and(|c| c.kind == ClKind::Space) && sc.xs.get(k - c0).is_some_and(|x| *x < content_end - 0.01);
-            let first = (align_from..c1).find(|k| pl.clusters.get(*k).is_some_and(|c| !matches!(c.kind, ClKind::Space | ClKind::Marker)));
+            let first = (align_from..c1).find(|k| pl.clusters.get(*k).is_some_and(|c| !leading_blank(c)));
             let stretches = justify && (align == Align::Distribute || first.is_some_and(|f| (f..c1).any(space)));
             let ink_end = if sc.hyphen_w > 0.0 { sc.xs.last().copied().unwrap_or(content_end) } else { content_end };
             let delta = if stretches { -room } else { (sc.right_edge - ink_end).max(-room) };

@@ -622,9 +622,17 @@ fn table_frame(ctx: &mut Ctx, t: &Table, avail: f32, depth: usize, style: Option
             // 9921 wide without borders, 9915 with borders of 0.25 pt, 9911 with 0.5, 9909 with
             // 0.625, 9905 with 0.75, 9899 with 1.125, 9895 with 1.25 and 9891 with 1.5 pt; one
             // of 90% with 0.75 pt borders is 8915 (8914.5 exactly), of 75% 7429, of 33.32% 3300.
-            let twip = |w: f32| ((f64::from(w) * 20.0 + 0.5 + 1e-6).floor() / 20.0) as f32;
-            let room = if new_borders { (pct_base - twip(start_half) - twip(end_half)).max(0.0) } else { pct_base };
-            Some(twip(room * (p / 100.0).min(MAX_WIDTH_SHARE)))
+            let twips = |w: f64| (w + 0.5 + 1e-6).floor();
+            let half = |w: f32| twips(f64::from(w) * 20.0);
+            let room = if new_borders {
+                (twips(f64::from(pct_base) * 20.0) - half(start_half) - half(end_half)).max(0.0)
+            } else {
+                twips(f64::from(pct_base) * 20.0)
+            };
+            // The share in whole fiftieths of a percent, as the file has it: half a twentieth
+            // more is then told from just short of it (90% of 9905 is 8914.5, and Word's 8915).
+            let fiftieths = (f64::from(p.min(MAX_WIDTH_SHARE * 100.0)) * 50.0).round();
+            Some((twips(room * fiftieths / 5000.0) / 20.0) as f32)
         }
         (_, Some(w)) if w > 0.0 => Some(w),
         _ => None,
@@ -2645,10 +2653,13 @@ fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     // short of one).
     let twips = |w: f64| (w + 0.5 + 1e-6).floor();
     let table = twips(f64::from(total) * 20.0);
+    // The shares in fiftieths of a percent, whole numbers as a file has them, so that a column
+    // of exactly half a twentieth more is told from one just short of it.
+    let fiftieths: Vec<f64> = shares.iter().map(|p| f64::from(*p) * 50.0).map(|f| if (f - f.round()).abs() < 1e-3 { f.round() } else { f }).collect();
     // What the shares are shares of: their sum, or the whole table when they add up to more.
     let more = sum > 100.0 + MORE_THAN_THE_TABLE;
-    let whole = if more { 100.0 } else { f64::from(sum) };
-    let mut widths: Vec<f64> = shares.iter().map(|p| twips(table * f64::from(*p) / whole)).collect();
+    let whole = if more { 5000.0 } else { fiftieths.iter().sum() };
+    let mut widths: Vec<f64> = fiftieths.iter().map(|f| twips(table * f / whole)).collect();
     if more {
         // Taken in order, and the last column gets what is left.
         let mut left = table;

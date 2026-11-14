@@ -144,13 +144,25 @@ fn nested_keep_cut(doc: &wordcraft_doc::Document, row: &table::RowLayout, room: 
     cut
 }
 
-/// [`table::split_row_keeping_cells`] that doesn't split a nested "can't split" row either.
+/// The room a part of `row` has on a page with `room` left. Word closes the table where the page
+/// ends, also under a row it splits there, and the border it closes with needs its room under
+/// the part as under a whole row ([`table::RowLayout::edge`]; the table's last row has it in its
+/// bottom band). Measured in Word for Windows with a row of six lines of 15 pt, the room moved in
+/// steps of 0.1 pt: as the first of two rows it keeps its third line from where the table's
+/// bottom border fits under that line (1.5 pt, 0.5 pt, or none with inside borders only), just as
+/// when it is the only row.
+fn part_room(row: &table::RowLayout, room: f32) -> f32 {
+    room - row.edge.clamp(0.0, room.max(0.0))
+}
+
+/// [`table::split_row_keeping_cells`] that doesn't split a nested "can't split" row either, for
+/// a page with `room` left.
 fn split_keeping_nested(doc: &wordcraft_doc::Document, row: &table::RowLayout, room: f32) -> Option<(table::RowLayout, table::RowLayout)> {
-    table::split_row_keeping_cells(row, nested_keep_cut(doc, row, room))
+    table::split_row_keeping_cells(row, nested_keep_cut(doc, row, part_room(row, room)))
 }
 
 fn row_can_start(doc: &wordcraft_doc::Document, row: &wordcraft_doc::Row, laid: &table::RowLayout, room: f32, page_height: f32) -> bool {
-    if laid.height <= room + 0.01 {
+    if laid.height + laid.edge <= room + 0.01 {
         return true;
     }
     if row.props.header || row.props.cant_split || (row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
@@ -312,10 +324,13 @@ pub(crate) fn place_table(ctx: &mut Ctx, pb: &mut PageBuilder, t: &wordcraft_doc
             let headed = ri >= header_rows.len() && !header_rows.is_empty() && ctx.header_repeats.saturating_add(header_cost) <= header_cap;
             let split = match (splittable && !moves_on && !defer_kept, first_part) {
                 (false, _) => None,
-                (true, true) => table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, room), true, &ctx.row_tops, headed),
+                (true, true) => table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, part_room(cur, room)), true, &ctx.row_tops, headed),
                 // On a fresh page, a nested row taller than the room splits rather than overflowing.
-                (true, false) => table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, room), false, &ctx.row_tops, headed)
-                    .or_else(|| table::split_row_opening(cur, room, false, &ctx.row_tops, headed)),
+                (true, false) => {
+                    let room = part_room(cur, room);
+                    table::split_row_opening(cur, nested_keep_cut(ctx.doc, cur, room), false, &ctx.row_tops, headed)
+                        .or_else(|| table::split_row_through(cur, room, &ctx.row_tops, headed))
+                }
             };
             match split {
                 Some((a, b)) => {

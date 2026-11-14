@@ -102,6 +102,7 @@ struct TableBlockContext<'ctx, 'state, 'doc> {
     page_table_wraps: &'state mut Vec<WrapArea>,
     previous_after: &'state mut f32,
     previous_style: &'state mut Option<(String, bool)>,
+    inner: &'state mut Vec<table::InnerRow>,
 }
 
 fn paragraph_spacing(input: ParagraphSpacing<'_>) -> (bool, f32) {
@@ -171,6 +172,7 @@ fn layout_table_block(input: TableBlockContext<'_, '_, '_>) -> bool {
         page_table_wraps,
         previous_after,
         previous_style,
+        inner,
     } = input;
     if depth > 8 {
         return false;
@@ -223,6 +225,19 @@ fn layout_table_block(input: TableBlockContext<'_, '_, '_>) -> bool {
         *previous_after = 0.0;
         // The mark ending the table's last row is the paragraph above what follows.
         *previous_style = Some((table::ROW_END_STYLE.into(), false));
+        // For a cell of a row split across pages: its rows, and the rows of the tables in their
+        // own cells.
+        for (ri, (row, laid)) in t.rows.iter().zip(&layout.rows).enumerate() {
+            let height = row.props.height.filter(|h| *h > 0.0);
+            inner.push(table::InnerRow {
+                table: path.to_vec(),
+                row: ri,
+                edge: laid.edge,
+                fixed: row.props.cant_split || (row.props.height_rule == wordcraft_doc::props::HeightRule::Exact && height.is_some()),
+                least: height.filter(|_| row.props.height_rule == wordcraft_doc::props::HeightRule::AtLeast),
+            });
+            inner.extend(laid.inner.iter().cloned());
+        }
     }
     true
 }
@@ -309,6 +324,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     let allow_same_style_space =
         in_cell && ctx.doc.settings.allow_space_of_same_style_in_table && matches!(ctx.doc.settings.compat_mode, 11 | 12 | 14);
     let mut items = Vec::new();
+    let mut inner: Vec<table::InnerRow> = Vec::new();
     // Pictures behind the text go first; `behind` counts them.
     let mut behind = 0;
     // Wrap areas of the box's floating objects.
@@ -533,6 +549,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
                     page_table_wraps: &mut page_table_wraps,
                     previous_after: &mut prev_after,
                     previous_style: &mut prev_style,
+                    inner: &mut inner,
                 }) {
                     continue;
                 }
@@ -542,7 +559,7 @@ pub(crate) fn layout_box(ctx: &mut Ctx, input: BoxInput<'_>) -> BoxLayout {
     let floats_bottom = float_tables.iter().map(|r| r.bottom()).fold(float_objects_bottom, f32::max);
     ctx.hide_deleted = outer_hide;
     ctx.joined = outer_joined;
-    BoxLayout { items, height: y.max(0.0), floats_bottom, last_top: last_top.max(0.0), mark_top, table_areas, page_table_wraps }
+    BoxLayout { items, height: y.max(0.0), floats_bottom, last_top: last_top.max(0.0), mark_top, table_areas, page_table_wraps, inner }
 }
 
 /// Whether line `k` is the paragraph's last and holds only its mark (and markers such as
@@ -613,6 +630,8 @@ pub(crate) struct BoxLayout {
     /// Where the last paragraph's last line starts when that line holds only the paragraph mark,
     /// after a closing line break (`text<w:br/>¶`).
     pub(crate) mark_top: Option<f32>,
+    /// The rows of the box's tables, for where a page ends in a cell's row (a cell's box).
+    pub(crate) inner: Vec<table::InnerRow>,
 }
 
 /// Where floating table `tl` goes in a box `width` wide whose next paragraph starts at `y`, and

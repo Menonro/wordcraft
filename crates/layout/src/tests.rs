@@ -2766,7 +2766,7 @@ fn a_paragraph_with_a_hidden_mark_takes_the_formatting_of_the_one_that_ends_its_
     }
 }
 
-/// From Word 2013 a group is in the list of the paragraph that ends it too (#3986): its lines
+/// From Word 2013 a group is in the list of the paragraph that ends it too (#6664): its lines
 /// have that one's list level indents, and the first paragraph's number is drawn only where that
 /// one is in a list, at that one's indents and with the first one's own text. Measured in Word
 /// for Windows with 22 pairs and triples of paragraphs in mode 15, eleven of them in mode 14 as

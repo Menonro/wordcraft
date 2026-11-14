@@ -87,6 +87,9 @@ pub(crate) struct CellAlign {
 pub(crate) struct RowTop {
     /// How much further down than in the table that border's band puts the row's content.
     pub lift: f32,
+    /// The room over the text of the row's own continuation: the top cell margin and that
+    /// border's band.
+    pub top: f32,
     /// That border, cell by cell.
     pub borders: Vec<Option<Border>>,
 }
@@ -849,7 +852,9 @@ pub fn layout_table(ctx: &mut Ctx, story: StoryRef, t: &Table, path: &[u32], ava
         if depth > 1 && !(row.props.height_rule == HeightRule::Exact && row.props.height.is_some_and(|h| h > 0.0)) {
             let lift = cells.first().map_or(0.0, |c| c.lift);
             if lift.is_finite() && cells.iter().all(|c| c.vmerge != VMerge::Continue && (c.lift - lift).abs() < 0.01) {
-                ctx.row_tops.insert((story, path.to_vec(), ri), RowTop { lift, borders: cells.iter().map(|c| c.opening).collect() });
+                let band = cells.iter().map(|c| c.opening.filter(Border::is_visible).map_or(0.0, |b| b.width.clamp(0.0, 12.0))).fold(0.0, f32::max);
+                ctx.row_tops
+                    .insert((story, path.to_vec(), ri), RowTop { lift, top: row_top + band, borders: cells.iter().map(|c| c.opening).collect() });
             } else {
                 ctx.row_tops.remove(&(story, path.to_vec(), ri));
             }
@@ -1344,8 +1349,8 @@ fn split_row_with(row: &RowLayout, cut: f32, whole_cells: bool, tops: Option<&Ro
             }
         }
         // The border a nested row opens the part that goes on with, under the cell's own.
-        for &(x0, x1, border) in opened.iter().flat_map(|o| &o.rules) {
-            b.push(Placed::Rule { x0, y0: c.top, x1, y1: c.top, border });
+        for &(x0, x1, below, border) in opened.iter().flat_map(|o| &o.rules) {
+            b.push(Placed::Rule { x0, y0: c.top + below, x1, y1: c.top + below, border });
         }
         // The border the part that goes on opens with at the top of its page.
         let page_top = c.page_top.as_ref().map(|t| PageTop { border: t.border, x: t.x, lift: 0.0, content: 0..0 });
@@ -1446,23 +1451,25 @@ fn split_rule(it: &Placed, at: &RuleCut, a: &mut Vec<Placed>, b: &mut Vec<Placed
     }
 }
 
-/// The top edge of a nested table's row that opens the continuation of a split row.
+/// The top edge of the nested tables' rows that open the continuation of a split row.
 struct NestedTop {
-    /// Where its top edge is in the row, when the border it opens with isn't known: the borders
-    /// drawn on that edge go on with it.
+    /// Where the top edge of a row that moves on whole is in the split row, when the border it
+    /// opens with isn't known: the borders drawn on that edge go on with it.
     edge: Option<f32>,
-    /// The borders it opens with: from where to where, and the border.
-    rules: Vec<(f32, f32, Border)>,
+    /// The borders they open with: from where to where, how far below the cell's own, and the
+    /// border.
+    rules: Vec<(f32, f32, f32, Border)>,
 }
 
-/// For each cell of a row being split, the nested table's row that opens the part that goes on,
-/// if one does: a row that moves on whole (by `splits`) with the first thing of its cell to move
-/// on in it. `moved`, the top of that first thing, becomes the top of what the continuation
-/// starts with.
+/// For each cell of a row being split, the nested tables' rows that open the part that goes on,
+/// if any do: the rows the first thing of the cell to move on is in. `moved`, the top of that
+/// first thing, becomes the top of what the continuation starts with.
 ///
-/// Such a row opens the part as the outer row does: under the border it would have as its
-/// table's first row (`tops`), its text clear of that one. Without `tops` it keeps the edge it
-/// has in its table, border and band.
+/// Such a row opens the part as the outer row does, under the border it would have as its
+/// table's first row (`tops`), its text clear of that one: a row that goes on itself (some of
+/// its text stays, by `splits`) under its top margin and that border's band, and inside it a row
+/// that moves on whole from its own top edge. Without `tops` the first keeps no room and the
+/// second the edge it has in its table, border and band.
 fn nested_openers(
     cells: &CellItems<'_>,
     splits: &[Vec<usize>],
@@ -1476,54 +1483,85 @@ fn nested_openers(
         if *m == f32::MAX {
             continue;
         }
-        // Each nested row's story, top and bottom, whether none of its text stays on this page,
-        // and its cells' numbers and sides.
-        type Row<'a> = ((StoryRef, &'a [u32], usize), (f32, f32, bool), Vec<(usize, f32, f32)>);
-        let mut nested: Vec<Row> = Vec::new();
-        for it in items.iter() {
-            let Placed::Cell { rect, table, row: r, cell: ci, story, covered: false, .. } = it else { continue };
-            if Some(table.0.len()) <= own_depth {
-                continue;
-            }
-            let of_cell = |path: &wordcraft_doc::Path| {
-                path.0.get(..table.0.len()) == Some(table.0.as_slice())
-                    && path.0.get(table.0.len()) == u32::try_from(*r).ok().as_ref()
-                    && path.0.get(table.0.len() + 1) == u32::try_from(*ci).ok().as_ref()
-            };
-            let moves = items.iter().zip(splits).all(|(o, &split)| match o {
-                Placed::Lines { story: own, path, l0, .. } => !(own == story && of_cell(path) && split > *l0),
-                _ => true,
-            });
-            let side = (*ci, rect.x, rect.x + rect.w);
-            match nested.iter_mut().find(|(key, ..)| *key == (*story, table.0.as_slice(), *r)) {
-                Some((_, (top, bottom, whole), sides)) => {
-                    (*top, *bottom, *whole) = (top.min(rect.y), bottom.max(rect.bottom()), *whole && moves);
-                    sides.push(side);
+        // The nested rows the first thing to move on is in, from the outermost in.
+        let mut rows = nested_rows(items, splits, own_depth);
+        rows.retain(|r| r.bottom > *m && if r.whole { r.top < *m - 0.01 } else { r.top <= *m });
+        rows.sort_by_key(|r| r.table.len());
+        let (mut room, mut top, mut edge, mut rules) = (0.0f32, *m, None, Vec::new());
+        for r in &rows {
+            let known = tops.and_then(|t| t.get(&(r.story, r.table.to_vec(), r.row)));
+            for &(ci, x0, x1) in &r.sides {
+                if let Some(b) = known.and_then(|k| k.borders.get(ci).copied().flatten()).filter(Border::is_visible) {
+                    rules.push((x0, x1, room, b));
                 }
-                None => nested.push(((*story, table.0.as_slice(), *r), (rect.y, rect.bottom(), moves), vec![side])),
             }
+            if r.whole {
+                // It starts the part from its top edge; what is in it stays as it is.
+                top = r.top - known.map_or(0.0, |k| k.lift);
+                edge = known.is_none().then_some(r.top);
+                break;
+            }
+            room += known.map_or(0.0, |k| k.top);
         }
-        // The outermost of them that the first thing to move on is in.
-        let first = nested
-            .into_iter()
-            .filter(|(_, (top, bottom, whole), _)| *whole && *top < *m - 0.01 && *bottom > *m)
-            .min_by(|a, b| a.1.0.total_cmp(&b.1.0));
-        let Some(((story, table, r), (top, ..), sides)) = first else { continue };
-        let known = tops.and_then(|t| t.get(&(story, table.to_vec(), r)));
-        let rules = known
-            .map(|k| {
-                sides
-                    .iter()
-                    .filter_map(|&(ci, x0, x1)| k.borders.get(ci).copied().flatten().filter(Border::is_visible).map(|b| (x0, x1, b)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        *m = top - known.map_or(0.0, |k| k.lift);
+        if rows.is_empty() || !(top - room).is_finite() {
+            continue;
+        }
+        *m = top - room;
         if let Some(o) = opened.last_mut() {
-            *o = Some(NestedTop { edge: known.is_none().then_some(top), rules });
+            *o = Some(NestedTop { edge, rules });
         }
     }
     opened
+}
+
+/// A row of a table inside a cell of a row being split.
+struct NestedRow<'a> {
+    story: StoryRef,
+    table: &'a [u32],
+    row: usize,
+    top: f32,
+    bottom: f32,
+    /// None of its text stays on this page.
+    whole: bool,
+    /// Its cells' numbers and sides.
+    sides: Vec<(usize, f32, f32)>,
+}
+
+/// The rows of the tables inside a cell with `items`, of which `splits` says what stays.
+fn nested_rows<'a>(items: &'a [Placed], splits: &[usize], own_depth: Option<usize>) -> Vec<NestedRow<'a>> {
+    let mut rows: Vec<NestedRow<'a>> = Vec::new();
+    for it in items {
+        let Placed::Cell { rect, table, row, cell, story, covered: false, .. } = it else { continue };
+        if Some(table.0.len()) <= own_depth {
+            continue;
+        }
+        let of_cell = |path: &wordcraft_doc::Path| {
+            path.0.get(..table.0.len()) == Some(table.0.as_slice())
+                && path.0.get(table.0.len()) == u32::try_from(*row).ok().as_ref()
+                && path.0.get(table.0.len() + 1) == u32::try_from(*cell).ok().as_ref()
+        };
+        let moves = items.iter().zip(splits).all(|(o, &split)| match o {
+            Placed::Lines { story: own, path, l0, .. } => !(own == story && of_cell(path) && split > *l0),
+            _ => true,
+        });
+        let side = (*cell, rect.x, rect.x + rect.w);
+        match rows.iter_mut().find(|r| (r.story, r.table, r.row) == (*story, table.0.as_slice(), *row)) {
+            Some(r) => {
+                (r.top, r.bottom, r.whole) = (r.top.min(rect.y), r.bottom.max(rect.bottom()), r.whole && moves);
+                r.sides.push(side);
+            }
+            None => rows.push(NestedRow {
+                story: *story,
+                table: &table.0,
+                row: *row,
+                top: rect.y,
+                bottom: rect.bottom(),
+                whole: moves,
+                sides: vec![side],
+            }),
+        }
+    }
+    rows
 }
 
 /// `row` as it stands at the top of a page the table doesn't start on: each cell opens with the

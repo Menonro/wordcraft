@@ -307,18 +307,20 @@ impl Ctx<'_> {
 
     /// The paragraph that ends the group `blocks[i]`, a paragraph whose mark is hidden, starts or
     /// goes on: the next paragraph whose own mark shows. From Word 2013 (compatibility mode 15)
-    /// the group is one paragraph with that one's formatting: its alignment, indents, tab stops
-    /// and line spacing hold for the lines of the paragraphs before it too. Earlier modes keep
-    /// each paragraph's own. `None` there, and where nothing goes on from the paragraph.
+    /// the group is one paragraph with that one's formatting: its alignment, indents and tab
+    /// stops hold for the lines of the paragraphs before it too. Earlier modes keep each
+    /// paragraph's own. `None` there, and where nothing goes on from the paragraph.
     ///
     /// Measured in Word for Windows with a paragraph whose mark is hidden before one whose mark
     /// shows, in modes 15, 14, 12 and none: a tab stop at 60 pt in the first and at 30 pt in the
     /// second puts the first one's text after its tab 30 pt in from mode 15 and 60 pt in before
-    /// it; a left indent of 40 pt, a centred or right alignment, a hanging or first-line indent,
-    /// a right indent and lines of exactly 30 pt are the second one's for both from mode 15, and
-    /// each paragraph's own before. An empty paragraph with a hidden mark between the two
-    /// changes nothing. The space before stays the first one's, and so does the font its text
-    /// has from its paragraph style.
+    /// it; a left indent of 40 pt, a hanging or first-line indent and a right indent are the
+    /// second one's for both from mode 15, and the left, first-line and hanging indents each
+    /// paragraph's own before; the line the two share is aligned by the second one's alignment
+    /// from mode 15 and by the first one's before. An empty paragraph with a hidden mark between
+    /// the two changes nothing. The space before stays the first one's, and so does the font its
+    /// text has from its paragraph style. Line spacing is no part of it: in every mode a line
+    /// has the spacing of the paragraph whose text ends it.
     ///
     /// Lists, from mode 15: the indents are those of the second one's list level, and the first
     /// one's number is drawn only where the second is in a list too, at the second one's

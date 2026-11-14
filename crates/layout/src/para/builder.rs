@@ -109,7 +109,9 @@ impl<'a> Builder<'a> {
                     spaced = true;
                     space_twin(primary.get(), dc, bold, italic)
                 }
-                Some(SegKey { face: Some(face), .. }) if !twin && face.covers(dc) => Some(face),
+                // (A non-breaking hyphen goes by its own rule below, also right after a character
+                // from a fallback face that has one.)
+                Some(SegKey { face: Some(face), .. }) if !twin && face.covers(dc) && dc != NB_HYPHEN => Some(face),
                 _ if !complex && ea_face.is_some() && crate::kinsoku::is_east_asian(c) => ea_face,
                 _ => {
                     let (bold, italic) = if complex { (rc.bold_cs, rc.italic_cs) } else { (rc.bold, rc.italic) };

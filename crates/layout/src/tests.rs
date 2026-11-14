@@ -2220,6 +2220,75 @@ fn a_paragraph_with_a_hidden_mark_takes_the_formatting_of_the_one_that_ends_its_
     }
 }
 
+/// From Word 2013 a group is in the list of the paragraph that ends it too (#3986): its lines
+/// have that one's list level indents, and the first paragraph's number is drawn only where that
+/// one is in a list, at that one's indents and with the first one's own text. Measured in Word
+/// for Windows with 22 pairs and triples of paragraphs in mode 15, eleven of them in mode 14 as
+/// well: "1." of a list at 36 pt with 18 pt hanging, its mark hidden, before a paragraph of a
+/// list at 72 pt with 36 pt hanging stands 36 pt in with its text 72 pt in; before a paragraph
+/// in no list it has no number and starts at the margin; a paragraph in no list before one of
+/// the first list starts 18 pt in, where that one's number would stand. Every paragraph counts
+/// in its list either way. Before mode 15 the number and the indents are the first paragraph's
+/// own.
+#[test]
+fn a_group_is_in_the_list_of_the_paragraph_that_ends_it() {
+    use wordcraft_doc::numbering::Level;
+    use wordcraft_doc::props::NumRef;
+    // "alpha" with a hidden mark, "bravo" and "tail", each in the first list (36 pt, 18 pt
+    // hanging), the second (72 pt, 36 pt hanging) or none, "tail" in the first: alpha's number
+    // with where it stands, where alpha's text starts, and the tail's number.
+    let laid = |mode: u32, first: Option<usize>, second: Option<usize>| {
+        let mut d = Document::from_text("alpha\nbravo\ntail");
+        d.settings.compat_mode = mode;
+        let numbering = Arc::make_mut(&mut d.numbering);
+        let wide = Level { text: "%1)".into(), indent: 72.0, hanging: 36.0, ..Level::default() };
+        let lists = [numbering.add_list(wordcraft_doc::ListKind::Numbered), numbering.try_add_levels(None, vec![wide]).unwrap()];
+        for (i, list) in [first, second, Some(0)].into_iter().enumerate() {
+            let p = d.para_mut(StoryRef::Body, &Path::top(i)).unwrap();
+            (p.props.space_before, p.props.space_after) = (Some(0.0), Some(0.0));
+            p.props.numbering = list.map(|k| NumRef { num: lists[k], level: 0 });
+            p.mark.hidden = (i == 0).then_some(true);
+        }
+        let l = lay(&d);
+        let para = |block: usize| {
+            l.pages[0]
+                .items
+                .iter()
+                .find_map(|it| match it {
+                    Placed::Lines { path, para, x, .. } if *path == Path::top(block) => Some((para.clone(), *x)),
+                    _ => None,
+                })
+                .expect("the paragraph is laid out")
+        };
+        let (alpha, x) = para(0);
+        let number = alpha.label.as_ref().map(|label| (label.text.clone(), x + label.x));
+        (number, x + alpha.x_of(0, 0).unwrap(), para(2).0.label.as_ref().map(|label| label.text.clone()))
+    };
+    for mode in [15, 14] {
+        let (_, left, _) = laid(mode, None, None);
+        // The number as it is drawn and how far in, and how far in the text starts.
+        let at = |first: Option<usize>, second: Option<usize>| {
+            let (number, text, tail) = laid(mode, first, second);
+            (number.map(|(number, x)| (number, ((x - left) * 100.0).round() / 100.0)), ((text - left) * 100.0).round() / 100.0, tail)
+        };
+        let own = (Some(("1.".to_string(), 18.0)), 36.0);
+        // Both in a list: the first one's number, at the second one's indents from mode 15.
+        let (number, text, tail) = at(Some(0), Some(1));
+        let want = if mode == 15 { (Some(("1.".to_string(), 36.0)), 72.0) } else { own.clone() };
+        assert_eq!((number, text), want, "mode {mode}, both in a list");
+        assert_eq!(tail.as_deref(), Some("2."), "mode {mode}: the tail's number after a paragraph of its list");
+        // The second in no list: no number from mode 15, and the text at the margin.
+        let (number, text, tail) = at(Some(0), None);
+        let want = if mode == 15 { (None, 0.0) } else { own.clone() };
+        assert_eq!((number, text), want, "mode {mode}, the second paragraph in no list");
+        assert_eq!(tail.as_deref(), Some("2."), "mode {mode}: the number that is not drawn counts");
+        // The first in no list: from mode 15 it starts where the second one's number would stand.
+        let (number, text, tail) = at(None, Some(0));
+        assert_eq!((number, text), (None, if mode == 15 { 18.0 } else { 0.0 }), "mode {mode}, the first paragraph in no list");
+        assert_eq!(tail.as_deref(), Some("2."), "mode {mode}: the second paragraph counts");
+    }
+}
+
 #[test]
 fn text_going_on_from_a_larger_heading_sits_on_its_baseline() {
     // A heading with a hidden mark followed by body text (a style separator in Word, #3986): the

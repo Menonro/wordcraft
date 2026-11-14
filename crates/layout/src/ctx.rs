@@ -290,6 +290,16 @@ impl Ctx<'_> {
     /// each paragraph's own before. An empty paragraph with a hidden mark between the two
     /// changes nothing. The space before stays the first one's, and so does the font its text
     /// has from its paragraph style.
+    ///
+    /// Lists, from mode 15: the indents are those of the second one's list level, and the first
+    /// one's number is drawn only where the second is in a list too, at the second one's
+    /// indents with its own text, formatting and what follows it (a first paragraph numbered
+    /// "1." in bold with a tab after, at 36 pt with 18 pt hanging, before one of a list at 72 pt
+    /// with 36 pt hanging: a bold "1." 36 pt in and the text 72 pt in). Before a paragraph in no
+    /// list the number is not drawn and the text starts at that one's indent; a first paragraph
+    /// in no list before one in a list starts where that one's number would stand. Either way
+    /// each paragraph counts in its list. Before mode 15 the number is the first one's, at its
+    /// own indents.
     pub(crate) fn group_end(&self, blocks: &Blocks, i: usize, table_chr: Option<&CharProps>) -> Option<Arc<Block>> {
         if self.doc.settings.compat_mode < 15 {
             return None;
@@ -558,6 +568,9 @@ impl Ctx<'_> {
 
     fn para_env<'b>(&'b self, input: ParaEnvInput<'b>) -> para::ParaEnv<'b> {
         let ParaEnvInput { width, label, table, exclusions, eq_number, typing_word, fitted, joined, format_from } = input;
+        // The first paragraph of a group shows its number only where the one that ends the group
+        // is in a list too (`Ctx::group_end`).
+        let label = label.filter(|_| format_from.is_none_or(|end| self.has_label(end)));
         para::ParaEnv {
             doc: self.doc,
             width,

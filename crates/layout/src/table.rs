@@ -616,8 +616,15 @@ fn table_frame(ctx: &mut Ctx, t: &Table, avail: f32, depth: usize, style: Option
         // 222.65pt. A width in points is the columns' own (measured in Word for Windows, 25% to
         // 120%, equal and unequal lines).
         (Some(p), _) if p > 0.0 => {
-            let room = if new_borders { (pct_base - start_half - end_half).max(0.0) } else { pct_base };
-            Some(room * (p / 100.0).min(MAX_WIDTH_SHARE))
+            // integ (on #5181, measured in Word to a twentieth of a point by which line of text
+            // still fits a one-cell table): each half border counts in whole twentieths, halves
+            // up, and so does the table's width. Between margins 9921 apart a table of 100% is
+            // 9921 wide without borders, 9915 with borders of 0.25 pt, 9911 with 0.5, 9909 with
+            // 0.625, 9905 with 0.75, 9899 with 1.125, 9895 with 1.25 and 9891 with 1.5 pt; one
+            // of 90% with 0.75 pt borders is 8915 (8914.5 exactly), of 75% 7429, of 33.32% 3300.
+            let twip = |w: f32| ((f64::from(w) * 20.0 + 0.5 + 1e-6).floor() / 20.0) as f32;
+            let room = if new_borders { (pct_base - twip(start_half) - twip(end_half)).max(0.0) } else { pct_base };
+            Some(twip(room * (p / 100.0).min(MAX_WIDTH_SHARE)))
         }
         (_, Some(w)) if w > 0.0 => Some(w),
         _ => None,
@@ -638,8 +645,11 @@ fn table_frame(ctx: &mut Ctx, t: &Table, avail: f32, depth: usize, style: Option
             grid.iter_mut().for_each(|w| *w *= k);
         }
         total = tw;
-        // Cells that give percentages share out the table's own width, whatever the grid's was.
-        apply_cell_shares(t, &mut grid);
+        // Cells that give percentages share out the table's own width, whatever the grid's was,
+        // in whole twentieths of a point.
+        if apply_cell_shares(t, &mut grid) {
+            total = grid.iter().sum();
+        }
     }
     let margins_def = default_margins(t, style);
     let tborders = table_borders(t, style);
@@ -2594,27 +2604,30 @@ fn is_automatic(t: &Table) -> bool {
 }
 
 /// Cell widths given as percentages of the table's (`w:tcW w:type="pct"`), the same in every
-/// row, replace the grid: each column takes its share of the grid's total, its edges on whole
-/// twentieths of a point as Word keeps them, so the columns add up to that total. Whether the
-/// cells' widths are such percentages. [`table_frame`] calls it again once the grid has the
-/// table's own width, when it has one: the shares are shares of that width.
+/// row, replace the grid: each column takes its share of the grid's total in whole twentieths of
+/// a point, as Word keeps its lengths. Whether the cells' widths are such percentages.
+/// [`table_frame`] calls it again once the grid has the table's own width, when it has one: the
+/// shares are shares of that width.
 ///
-/// Measured in Word for Windows with three equal grid columns under cells of 50, 25 and 25%: the
-/// columns are 240.8, 120.3 and 120.4 pt of a 481.5 pt table, in a fixed-layout table too, and
-/// 150, 75 and 75 pt of a 300 pt one; cells of 40, 20 and 20% give the same columns, so shares
-/// of less than the table are shares of their sum. Shares of more than the table are taken in
-/// order and the last column gets what is left: 50, 25 and 45% give those same columns again,
-/// 60, 30 and 30% give 288.9, 144.5 and 48.1 pt. Where that leaves the last column no room the
-/// grid stays as it is (Word then takes the room for that column's content from the others).
+/// Every column but the first is its share of the table to the nearest twentieth, halves up, and
+/// the first takes what the others leave. Shares of less than the table are shares of their sum.
+/// Shares of more than the table are taken in order and the last column gets what is left; where
+/// that leaves it no room the grid stays as it is (Word then takes the room for that column's
+/// content from the others). The grid in the file plays no part, however near the shares it is.
 ///
-/// The grid in the file plays no part, however near the shares it is. Measured in Word for
-/// Windows with cells of 48 and 52% in a table of 100% (9906 twentieths of a point between the
-/// borders' middles), by which of two lines of text 0.05 of a twentieth apart still fits the
-/// second cell: the cell is 5151 twentieths wide whether the grid says 5150, 5151, 5152, 5153 or
-/// 5154 for it or halves the table, with fixed layout too, and 6603 for 33.34 and 66.66% whether
-/// the grid says 6603 or 6604. The edge between the cells stands on a whole twentieth: the exact
-/// shares are 5151.12, and 5250.18 and 5448.30 for cells of 53 and 55%, where Word has 5151,
-/// 5250 and 5448.
+/// Measured in Word for Windows by which of two lines of text 0.05 of a twentieth of a point
+/// apart still fits a cell, in tables 9905 twentieths wide:
+/// - 48 and 52%: the second cell is 5151 wide whether the grid says 5150, 5151, 5152, 5153 or
+///   5154 for it or halves the table, with fixed layout too (5150.6 exactly); 33.34 and 66.66%
+///   give 6603 under grids of 6603 and 6604;
+/// - 30.40, 30.42 and 39.18%: 3011, 3013 and 3881; 33.34, 33.34 and 33.32%: 3303, 3302 and 3300
+///   (3302.33, 3302.33 and 3300.35 exactly);
+/// - 25, 25 and 25%: 3301, 3302 and 3302; 40 and 40%: the second cell 4953, half the table;
+/// - 60, 30 and 30%: the second cell 2972 (2971.5 exactly).
+///
+/// With the columns of an eight-column form it gives the grid Word wrote for them to the
+/// twentieth: 14.46, 7.10, 12.12, 14.42, 8.94, 10.28, 14.94 and 17.74% of 14742 are 2132, 1047,
+/// 1787, 2126, 1318, 1515, 2202 and 2615.
 fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     let Some(first) = t.rows.first() else { return false };
     let share = |c: &wordcraft_doc::Cell| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0 && c.props.width.is_none() && c.span() == 1);
@@ -2628,23 +2641,37 @@ fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     if !t.rows.iter().all(same) {
         return false;
     }
+    // Whole twentieths of a point, halves up (the sliver keeps a half that arithmetic left just
+    // short of one).
+    let twips = |w: f64| (w + 0.5 + 1e-6).floor();
+    let table = twips(f64::from(total) * 20.0);
     // What the shares are shares of: their sum, or the whole table when they add up to more.
-    let whole = sum.min(100.0);
-    let twip = |w: f32| (w * 20.0).round() / 20.0;
-    let mut widths = Vec::with_capacity(shares.len());
-    let (mut taken, mut left) = (0.0f32, 0.0f32);
-    for (k, p) in shares.iter().enumerate() {
-        taken += p;
-        let right = if k + 1 == shares.len() { total } else { twip(total * (taken / whole).min(1.0)) };
-        widths.push(right - left);
-        left = right;
+    let more = sum > 100.0 + MORE_THAN_THE_TABLE;
+    let whole = if more { 100.0 } else { f64::from(sum) };
+    let mut widths: Vec<f64> = shares.iter().map(|p| twips(table * f64::from(*p) / whole)).collect();
+    if more {
+        // Taken in order, and the last column gets what is left.
+        let mut left = table;
+        let last = widths.len().saturating_sub(1);
+        for (k, w) in widths.iter_mut().enumerate() {
+            *w = if k == last { left } else { w.min(left) };
+            left -= *w;
+        }
+    } else if let Some((first, others)) = widths.split_first_mut() {
+        *first = (table - others.iter().sum::<f64>()).max(0.0);
     }
-    if sum > 100.0 && widths.last().is_none_or(|w| *w < MIN_LAST_SHARE) {
+    if more && widths.last().is_none_or(|w| *w < f64::from(MIN_LAST_SHARE) * 20.0) {
         return false;
     }
-    grid.copy_from_slice(&widths);
+    for (g, w) in grid.iter_mut().zip(&widths) {
+        *g = (w / 20.0) as f32;
+    }
     true
 }
+
+/// How far past 100% cell percentages add up before they are more than the table: a fiftieth of
+/// a percent is the least a file can say, and sums of rounded shares fall short of that.
+const MORE_THAN_THE_TABLE: f32 = 0.005;
 
 /// The least room, in points, that percentages adding up to more than the table must leave the
 /// last column for [`apply_cell_shares`] to follow them.

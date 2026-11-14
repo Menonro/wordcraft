@@ -8560,7 +8560,8 @@ fn a_percentage_table_from_word_2013_ends_its_outer_borders_at_its_width() {
         d.body = vec![std::sync::Arc::new(wordcraft_doc::Block::Table(t))];
         cell_edges(&d)
     };
-    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    // integ: a twentieth of a point, the table's width being whole twentieths (see `table_frame`).
+    let near = |a: f32, b: f32| (a - b).abs() < 0.051;
     let plain = cells(0.0, true);
     let (left, right) = (plain[0].0, plain[1].1);
     for w in [0.75, 3.0, 6.0] {
@@ -8664,7 +8665,8 @@ fn a_table_from_word_2013_ends_its_borders_by_mode_cell_side_and_direction() {
         d.body = vec![std::sync::Arc::new(wordcraft_doc::Block::Table(t))];
         cell_edges(&d)
     };
-    let near = |a: f32, b: f32| (a - b).abs() < 0.01;
+    // integ: a twentieth of a point, the table's width being whole twentieths (see `table_frame`).
+    let near = |a: f32, b: f32| (a - b).abs() < 0.051;
     let plain = cells(&Case { start: 0.0, end: 0.0, ..base });
     let (left, right) = (plain[0].0, plain[1].1);
     let c14 = cells(&Case { mode: 14, ..base });
@@ -8709,7 +8711,8 @@ fn a_percentage_table_from_word_2013_takes_its_share_after_its_outer_borders() {
             let c = cell_edges(&d);
             let got = c[1].1 - c[0].0;
             let want = (text_width - start / 2.0 - end / 2.0) * pct / 100.0;
-            assert!((got - want).abs() < 0.01, "{pct}%, lines {start} and {end}: columns {got}, Word {want}");
+            // integ: a twentieth of a point, the table's width being whole twentieths (see `table_frame`).
+            assert!((got - want).abs() < 0.051, "{pct}%, lines {start} and {end}: columns {got}, Word {want}");
         }
     }
 }
@@ -14258,13 +14261,19 @@ fn consistent_percentage_cell_widths_override_the_grid() {
             let got = columns(fixed, grid, [48.58, 25.71, 25.71], &|_| {});
             assert!(near(got, (194.3, 297.15)), "a grid of {grid:?}, fixed layout {fixed}: {got:?}");
         }
-        // The shares are shares of the table's own width when it has one, not of the grid's:
-        // 48, 26 and 26% of a table of 495.3 pt whose grid adds up to 495.25 pt put the edges
-        // 237.75 and 366.5 pt in, on whole twentieths, as Word does. Scaled up with the grid the
-        // first column was 237.724 pt and the last 0.026 pt wider, and a word that Word moves
-        // on fitted in it.
-        let got = columns(fixed, [237.7, 128.75, 128.8], [48.0, 26.0, 26.0], &|t| t.props.width = Some(495.3));
-        assert!(near(got, (237.75, 366.5)), "48, 26 and 26% of 495.3 pt, fixed layout {fixed}: {got:?}");
+        // The shares are shares of the table's own width when it has one, not of the grid's, in
+        // whole twentieths of a point: every column but the first its share to the nearest
+        // twentieth, the first what the others leave. Word, in a table 9905 twentieths wide
+        // (495.25 pt): 25, 25 and 25% are 3301, 3302 and 3302; 33.34, 33.34 and 33.32% are 3303,
+        // 3302 and 3300; 30.40, 30.42 and 39.18% are 3011, 3013 and 3881. Scaled up from a grid
+        // a twentieth short of the table, or with the edges rounded from the left, the columns
+        // came out a twentieth off, and a word that Word moves on fitted.
+        for (shares, want) in
+            [([25.0, 25.0, 25.0], (165.05, 330.15)), ([33.34, 33.34, 33.32], (165.15, 330.25)), ([30.4, 30.42, 39.18], (150.55, 301.2))]
+        {
+            let got = columns(fixed, [165.0, 165.1, 165.1], shares, &|t| t.props.width = Some(495.25));
+            assert!(near(got, want), "{shares:?} of 495.25 pt, fixed layout {fixed}: {got:?}");
+        }
         // Shares of more than the table are taken in order, and the last column gets what is
         // left (measured in Word with sixteen tables: 50, 25 and 45% give the columns of 50, 25
         // and 25%; 60, 30 and 30% give 288.9, 144.5 and 48.1 pt of 481.5).
@@ -14280,12 +14289,13 @@ fn consistent_percentage_cell_widths_override_the_grid() {
         } else {
             assert!(got.0 < 199.0 && got.1 < 397.0 && (got.0 - 133.0).abs() > 30.0, "50, 49.5 and 0.5%, fitted to content: {got:?}");
         }
-        // The column edges are on whole twentieths of a point and the columns still add up to
-        // the grid's width: thirds of 400 pt are 133.35, 133.3 and 133.35 pt.
+        // The columns are whole twentieths of a point wide and still add up to the grid's
+        // width: thirds of 400 pt are 133.3, 133.35 and 133.35 pt.
         let got = columns(fixed, [100.0, 100.0, 200.0], [25.0, 25.0, 25.0], &|_| {});
-        assert!(near(got, (133.35, 266.65)), "thirds of 400 pt, fixed layout {fixed}: {got:?}");
+        assert!(near(got, (133.3, 266.65)), "thirds of 400 pt, fixed layout {fixed}: {got:?}");
     }
     // The table is as wide as its grid was: 400 pt, not the 400.05 of three columns of 133.35.
+    // (Word keeps a table of three such cells 9905 twentieths wide too: 3301, 3302 and 3302.)
     let mut t = Table::new(1, 3, 400.0);
     (t.props.fixed, t.grid) = (true, vec![100.0, 100.0, 200.0]);
     for cell in &mut t.rows[0].cells {

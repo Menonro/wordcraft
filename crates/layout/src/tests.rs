@@ -12019,16 +12019,23 @@ fn consistent_percentage_cell_widths_override_the_grid() {
             let got = columns(fixed, EQUAL, shares, &|_| {});
             assert!(near(got, (200.0, 300.0)), "{what}, fixed layout {fixed}: the columns start {got:?} after the first");
         }
-        // A grid that agrees stays what it is, to the hundredth of a point: Word wrote it from
-        // the shares, and a column 0.02 pt off moves a word of a full line to the next. It
-        // agrees while no column is further from its share than a percentage can say (a
-        // fiftieth of a percent of the table, 0.08 pt here) and a twentieth of a point.
+        // A grid that agrees gives the same columns, and one that is a rounding away from the
+        // shares counts for no more than one far from them: Word takes the shares either way
+        // (the second cell of 48 and 52% is 5151 twentieths of a point wide under a grid that
+        // says 5150 to 5154 for it).
         let got = columns(fixed, [200.0, 100.0, 100.0], [50.0, 25.0, 25.0], &|_| {});
         assert!(near(got, (200.0, 300.0)), "a grid that agrees, fixed layout {fixed}: {got:?}");
-        let got = columns(fixed, [194.4, 102.85, 102.75], [48.58, 25.71, 25.71], &|_| {});
-        assert!(near(got, (194.4, 297.25)), "a grid a rounding away from the shares, fixed layout {fixed}: {got:?}");
-        let got = columns(fixed, [194.5, 102.85, 102.65], [48.58, 25.71, 25.71], &|_| {});
-        assert!(near(got, (194.3, 297.15)), "a grid 0.2 pt away from the shares, fixed layout {fixed}: {got:?}");
+        for grid in [[194.4, 102.85, 102.75], [194.5, 102.85, 102.65], EQUAL] {
+            let got = columns(fixed, grid, [48.58, 25.71, 25.71], &|_| {});
+            assert!(near(got, (194.3, 297.15)), "a grid of {grid:?}, fixed layout {fixed}: {got:?}");
+        }
+        // The shares are shares of the table's own width when it has one, not of the grid's:
+        // 48, 26 and 26% of a table of 495.3 pt whose grid adds up to 495.25 pt put the edges
+        // 237.75 and 366.5 pt in, on whole twentieths, as Word does. Scaled up with the grid the
+        // first column was 237.724 pt and the last 0.026 pt wider, and a word that Word moves
+        // on fitted in it.
+        let got = columns(fixed, [237.7, 128.75, 128.8], [48.0, 26.0, 26.0], &|t| t.props.width = Some(495.3));
+        assert!(near(got, (237.75, 366.5)), "48, 26 and 26% of 495.3 pt, fixed layout {fixed}: {got:?}");
         // Shares of more than the table are taken in order, and the last column gets what is
         // left (measured in Word with sixteen tables: 50, 25 and 45% give the columns of 50, 25
         // and 25%; 60, 30 and 30% give 288.9, 144.5 and 48.1 pt of 481.5).

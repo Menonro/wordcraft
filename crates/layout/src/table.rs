@@ -420,6 +420,8 @@ fn table_frame(ctx: &mut Ctx, t: &Table, avail: f32, depth: usize, style: Option
             grid.iter_mut().for_each(|w| *w *= k);
         }
         total = tw;
+        // Cells that give percentages share out the table's own width, whatever the grid's was.
+        apply_cell_shares(t, &mut grid);
     }
     // A table with its own width keeps it, however far it runs past the margins (as in Word).
     if target.is_none() && total > avail * 1.5 && !t.props.fixed {
@@ -1514,9 +1516,10 @@ fn is_automatic(t: &Table) -> bool {
 }
 
 /// Cell widths given as percentages of the table's (`w:tcW w:type="pct"`), the same in every
-/// row, replace a stale grid: each column takes its share of the grid's total, its edges on
-/// whole twentieths of a point as Word keeps them, so the columns add up to that total. Whether
-/// the cells' widths are such percentages.
+/// row, replace the grid: each column takes its share of the grid's total, its edges on whole
+/// twentieths of a point as Word keeps them, so the columns add up to that total. Whether the
+/// cells' widths are such percentages. [`table_frame`] calls it again once the grid has the
+/// table's own width, when it has one: the shares are shares of that width.
 ///
 /// Measured in Word for Windows with three equal grid columns under cells of 50, 25 and 25%: the
 /// columns are 240.8, 120.3 and 120.4 pt of a 481.5 pt table, in a fixed-layout table too, and
@@ -1526,9 +1529,14 @@ fn is_automatic(t: &Table) -> bool {
 /// 60, 30 and 30% give 288.9, 144.5 and 48.1 pt. Where that leaves the last column no room the
 /// grid stays as it is (Word then takes the room for that column's content from the others).
 ///
-/// A grid that is as near the shares as a percentage can say (a fiftieth of a percent of the
-/// table, and a twentieth of a point for rounding) is the one Word wrote from them, and stays as
-/// it is: a column 0.02 pt narrower moves a word of a full line to the next.
+/// The grid in the file plays no part, however near the shares it is. Measured in Word for
+/// Windows with cells of 48 and 52% in a table of 100% (9906 twentieths of a point between the
+/// borders' middles), by which of two lines of text 0.05 of a twentieth apart still fits the
+/// second cell: the cell is 5151 twentieths wide whether the grid says 5150, 5151, 5152, 5153 or
+/// 5154 for it or halves the table, with fixed layout too, and 6603 for 33.34 and 66.66% whether
+/// the grid says 6603 or 6604. The edge between the cells stands on a whole twentieth: the exact
+/// shares are 5151.12, and 5250.18 and 5448.30 for cells of 53 and 55%, where Word has 5151,
+/// 5250 and 5448.
 fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     let Some(first) = t.rows.first() else { return false };
     let share = |c: &wordcraft_doc::Cell| c.props.width_pct.filter(|p| p.is_finite() && *p > 0.0 && c.props.width.is_none() && c.span() == 1);
@@ -1556,10 +1564,7 @@ fn apply_cell_shares(t: &Table, grid: &mut [f32]) -> bool {
     if sum > 100.0 && widths.last().is_none_or(|w| *w < MIN_LAST_SHARE) {
         return false;
     }
-    let near = total / 5000.0 + 0.051;
-    if grid.iter().zip(&widths).any(|(g, w)| (g - w).abs() > near) {
-        grid.copy_from_slice(&widths);
-    }
+    grid.copy_from_slice(&widths);
     true
 }
 

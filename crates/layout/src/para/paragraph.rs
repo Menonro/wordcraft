@@ -98,9 +98,9 @@ fn is_special(c: char) -> bool {
 }
 
 /// The paragraph's formatting: its style's, the table's and the list level's indents. A paragraph
-/// whose mark is hidden has the alignment, indents (its list level's too), tab stops and line
-/// spacing of the one that ends its group instead ([`ParaEnv::format_from`]); its space before
-/// stays its own, and so does its list number, which is drawn only where that paragraph is in a
+/// whose mark is hidden has the alignment, indents (its list level's too) and tab stops of the
+/// one that ends its group instead ([`ParaEnv::format_from`]); its space before and line spacing
+/// stay its own, and so does its list number, which is drawn only where that paragraph is in a
 /// list too.
 /// shortcut: a group that ends centred or right-aligned keeps the alignment of each of its
 /// paragraphs. Word sets the line two of them share as one line, which takes laying the next
@@ -125,7 +125,7 @@ fn paragraph_props(p: &Paragraph, env: &ParaEnv) -> ResolvedPara {
                 rp.align = end.align;
             }
             (rp.indent_left, rp.indent_right, rp.indent_first) = (end.indent_left, end.indent_right, end.indent_first);
-            (rp.indent_chars, rp.tabs, rp.line_spacing) = (end.indent_chars, end.tabs, end.line_spacing);
+            (rp.indent_chars, rp.tabs) = (end.indent_chars, end.tabs);
         }
         None => list_indents(&mut rp, p, env.label.as_ref().map(|(_, level)| level), doc),
     }

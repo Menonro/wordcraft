@@ -412,7 +412,7 @@ pub struct ParaEnv<'a> {
     /// list number is counted and sets its indents, but isn't drawn.
     pub joined: bool,
     /// The paragraph that ends the group this one, whose mark is hidden, is part of: from Word
-    /// 2013 this one's lines have that one's alignment, indents, tab stops and line spacing
-    /// (`Ctx::group_end`).
+    /// 2013 this one's lines have that one's alignment, indents (its list level's too), tab stops
+    /// and line spacing (`Ctx::group_end`).
     pub format_from: Option<&'a wordcraft_doc::Paragraph>,
 }

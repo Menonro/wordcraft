@@ -150,6 +150,7 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 ## Progress log
 
+- 2026-11-01: Tables: from Word 2013 (compatibility mode 15) a percentage-width table takes its share of the room left after its outer borders' outer halves, as in Word: a bordered 100% table no longer runs half a border past the right margin, and the lines between its columns and its cells' text stay where Word puts them. An end-aligned table, of either kind of width, puts its end border's outer edge on the margin, as Word does, rather than the border's middle, and a centred left-to-right table centres its outer edges.
  fix/6146-touchpad-scroll-speed
 - 2026-11-09: Touchpad and mouse-wheel scroll speed settings (#6146): scales Wayland touchpad point input by default (4×) so two-finger scrolling matches desktop speed rather than crawling 1:1, and scales mouse wheel line distance; File › Options › Advanced › Scrolling; commands ui.scrollSpeed and ui.touchpadScrollSpeed.
 
@@ -921,6 +922,7 @@ MATH glyphs that reference the same construction now share its immutable variant
 | 2026-11-04 | trivial | Progress log: #4501 refactor regressions restored (#4683) |
 | 2026-11-06 | trivial | Progress log: edited ODT paragraphs keep custom styles with an outline level (gap 19) |
 | 2026-10-31 | trivial | Control/MCP #2596 review fixes; readiness estimates unchanged |
+| 2026-11-01 | trivial | Progress log: a percentage-width table from Word 2013 takes its share after its outer borders |
 | 2026-11-08 | trivial | Progress log: XML line ends in text normalised (#5897) |
 | 2026-11-08 | trivial | Progress log: contextual spacing drops the space after a cell's last Normal paragraph (#5450) |
 | 2026-11-06 | trivial | Progress log: the Arabic interface's Styles gallery reads from the right (#5566) |

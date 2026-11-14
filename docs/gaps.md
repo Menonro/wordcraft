@@ -198,6 +198,7 @@ Page Setup's margin, paper-size and document-grid number boxes scroll long text 
 
 | Date | Change | Summary |
 |---|---|---|
+| 2026-11-01 | trivial | From Word 2013 (compatibility mode 15) a percentage-width table takes its share of the room left after its outer borders' outer halves, so a 100% table's outer edges reach the margins and inner lines stay where Word draws them; tables with a width in points keep their columns and move in by half the left border, as before; an end-aligned table puts its end border's outer edge on the margin, and a centred left-to-right table centres its outer edges (measured in Word for Windows); no ranked gap changed; readiness estimates unchanged |
 | 2026-11-12 | trivial | Clipboard: a copied picture is published to the system clipboard as PNG, with HTML where the host writes it, and WordCraft's own paste keeps the original fragment; a copy of only shapes stays in WordCraft (#6205). Native external-app paste remains untested. |
 | 2026-11-04 | trivial | #4501 refactor regressions restored: per-section header/footer grid, ODT default font, link tooltip (#4683); no ranked gap changed; readiness estimates unchanged |
 | 2026-11-08 | trivial | #10 narrowed: a turned inline picture with no recorded effect extent keeps its line to its frame (exchanged near a quarter turn in Word 2013+ layout), cut at the line; gap stays open |
